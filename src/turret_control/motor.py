@@ -1,62 +1,81 @@
-import argparse
 import time
 from gpiozero import OutputDevice
 
-class StepperController:
-    def __init__(self, step_pin=17, dir_pin=27):
-        """Initializes GPIO pins for STEP/DIR driver control on Pi 5."""
-        self.step_pin = OutputDevice(step_pin)
-        self.dir_pin = OutputDevice(dir_pin)
-
-    def move(self, steps: int, clockwise: bool = True, start_delay: float = 0.004, min_delay: float = 0.0002, accel_steps: int = 400):
-        """
-        Drives the stepper motor with trapezoidal acceleration to prevent stalling.
+class MaxSpeed5VStepper:
+    def __init__(self, in1=17, in2=27, in3=22, in4=23):
+        """Initializes GPIO pins for ULN2003 driver on Pi 5."""
+        self.pins = [
+            OutputDevice(in1),
+            OutputDevice(in2),
+            OutputDevice(in3),
+            OutputDevice(in4)
+        ]
         
-        :param steps: Total pulse steps to execute.
-        :param clockwise: True for CW rotation, False for CCW.
-        :param start_delay: Initial pulse delay (seconds) at start/stop.
-        :param min_delay: Target pulse delay (seconds) at top speed.
-        :param accel_steps: Number of steps used for ramping up and down.
-        """
-        # Set direction line
-        if clockwise:
-            self.dir_pin.on()
-        else:
-            self.dir_pin.off()
+        # 2-Phase Full-Stepping: Delivers maximum torque at 5V
+        self.sequence = [
+            [1, 1, 0, 0],
+            [0, 1, 1, 0],
+            [0, 0, 1, 1],
+            [1, 0, 0, 1],
+        ]
 
+    def move_max_5v(self, steps=2048, clockwise=True):
+        """
+        Drives the motor at peak 5V speed using a calibrated acceleration curve.
+        
+        :param steps: Total steps to execute (2048 full-steps = 1 revolution)
+        :param clockwise: Direction of rotation
+        """
+        # Tuned parameters for standard 5V operation
+        start_delay = 0.0025  # 2.5ms start delay (prevents initial rotor slip)
+        min_delay = 0.00085   # 0.85ms peak delay (absolute max speed threshold at 5V)
+        accel_steps = 300     # Ramp steps required to hit top speed safely
+        
+        seq = self.sequence if clockwise else list(reversed(self.sequence))
+        seq_len = len(seq)
+        
         current_delay = start_delay
-        delay_step = (start_delay - min_delay) / accel_steps if accel_steps > 0 else 0
+        delay_step = (start_delay - min_delay) / accel_steps
 
         for step in range(steps):
-            # Generate pulse
-            self.step_pin.on()
-            time.sleep(current_delay / 2)
-            self.step_pin.off()
-            time.sleep(current_delay / 2)
+            pattern = seq[step % seq_len]
+            
+            # Apply pin outputs
+            for pin, state in zip(self.pins, pattern):
+                if state:
+                    pin.on()
+                else:
+                    pin.off()
 
-            # Acceleration phase (ramping up speed)
+            time.sleep(current_delay)
+
+            # Acceleration phase
             if step < accel_steps and current_delay > min_delay:
                 current_delay -= delay_step
-            # Deceleration phase (ramping down speed)
+            # Deceleration phase
             elif step >= (steps - accel_steps) and current_delay < start_delay:
                 current_delay += delay_step
 
+        self.stop()
+
+    def stop(self):
+        """Disables all pins to avoid drawing continuous current at 5V when stationary."""
+        for pin in self.pins:
+            pin.off()
+
     def close(self):
-        self.step_pin.close()
-        self.dir_pin.close()
+        self.stop()
+        for pin in self.pins:
+            pin.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Drive a stepper motor via GPIO on Raspberry Pi 5.")
-    parser.add_argument("--steps", type=int, default=3200, help="Total steps to run")
-    parser.add_argument("--ccw", action="store_true", help="Rotate counter-clockwise")
-    args = parser.parse_args()
-
-    motor = StepperController(step_pin=17, dir_pin=27)
+    motor = MaxSpeed5VStepper(in1=17, in2=27, in3=22, in4=23)
     try:
-        print(f"Running motor for {args.steps} steps...")
-        motor.move(steps=args.steps, clockwise=not args.ccw)
-        print("Finished successfully.")
+        print("Running 28BYJ-48 at maximum 5V speed...")
+        # 2048 steps = 1 full revolution in 2-phase full-step mode
+        motor.move_max_5v(steps=2048, clockwise=True)
+        print("Motion complete.")
     except KeyboardInterrupt:
-        print("\nMotion interrupted by user.")
+        print("\nInterrupted.")
     finally:
         motor.close()
