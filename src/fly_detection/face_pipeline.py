@@ -147,21 +147,26 @@ def draw_faces(
     faces: List[FaceBox],
     color: Tuple[int, int, int] = (0, 220, 80),
     thickness: int = 2,
+    selected_index: int | None = None,
 ) -> np.ndarray:
     """Return a copy of ``frame_bgr`` with face boxes and centers drawn."""
     out = frame_bgr.copy()
-    for face in faces:
+    for i, face in enumerate(faces):
+        is_selected = selected_index is not None and i == selected_index
+        box_color = (0, 255, 255) if is_selected else color
+        box_thickness = thickness + (1 if is_selected else 0)
         x1, y1, x2, y2 = face.as_xyxy
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness)
+        cv2.rectangle(out, (x1, y1), (x2, y2), box_color, box_thickness)
         cx, cy = face.center
-        cv2.circle(out, (cx, cy), 4, color, -1)
+        cv2.circle(out, (cx, cy), 4, box_color, -1)
+        label = "TARGET face" if is_selected else "face"
         cv2.putText(
             out,
-            "face",
+            label,
             (x1, max(0, y1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
-            color,
+            box_color,
             1,
             cv2.LINE_AA,
         )
