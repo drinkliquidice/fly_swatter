@@ -1,0 +1,4 @@
+gpiozero
+lgpio
+opencv-python-headless
+numpy
