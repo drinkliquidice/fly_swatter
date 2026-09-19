@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fly-swatter"
+version = "0.1.0"
+description = "Hack The North 2026 automatic fly detection swatter"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gpiozero",
+    "lgpio",
+    "opencv-python>=4.8,<5",
+    "numpy",
+    "depthai",
+]
+
+[project.scripts]
+fly-detect = "fly_detection.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
