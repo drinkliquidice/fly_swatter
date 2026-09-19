@@ -11,9 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
     "gpiozero",
     "lgpio",
-    "opencv-python>=4.8,<5",
+    "opencv-python>=4.8",
     "numpy",
-    "depthai",
+    "depthai>=2.24,<3",
 ]
 
 [project.scripts]

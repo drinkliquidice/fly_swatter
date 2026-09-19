@@ -1,0 +1,14 @@
+name: flyswatter
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - gpiozero
+      - lgpio
+      - "opencv-python>=4.8"
+      - numpy
+      - depthai>=2.24,<3
+      - -e .
