@@ -55,10 +55,10 @@ class FlyBox:
 
 class StaticFlyDetector:
     """
-    Detect printed flies on white paper (lenient defaults for real lighting).
+    Detect printed flies on white letter/A4 paper held in portrait.
 
     A valid target prefers:
-      - a bright paper region around ``min_paper_w`` x ``min_paper_h``
+      - a bright portrait paper region (taller than wide, ~letter/A4 aspect)
       - a darker printed fly on that paper at least ``min_fly_w`` x ``min_fly_h``
       - the fly centered on the paper (middle 50% of the paper box)
     """
@@ -69,13 +69,17 @@ class StaticFlyDetector:
         min_fly_h: int = 15,
         max_fly_w: int = 220,
         max_fly_h: int = 220,
-        min_paper_w: int = 220,
-        min_paper_h: int = 220,
+        min_paper_w: int = 180,
+        min_paper_h: int = 260,
         white_threshold: int = 155,
         dark_threshold: int = 150,
         blur_ksize: int = 5,
         min_aspect: float = 0.2,
         max_aspect: float = 5.0,
+        # Portrait letter/A4: height/width ≈ 1.29 (US Letter) to 1.41 (A4).
+        require_portrait: bool = True,
+        min_paper_aspect: float = 1.15,
+        max_paper_aspect: float = 1.75,
         confirm_frames: int = 1,
         match_distance: float = 48.0,
         min_area: int | None = None,
@@ -94,6 +98,9 @@ class StaticFlyDetector:
         self.blur_ksize = blur_ksize
         self.min_aspect = min_aspect
         self.max_aspect = max_aspect
+        self.require_portrait = require_portrait
+        self.min_paper_aspect = min_paper_aspect
+        self.max_paper_aspect = max_paper_aspect
         self.confirm_frames = max(1, confirm_frames)
         self.match_distance = match_distance
         self.min_area = min_area if min_area is not None else max(40, min_fly_w * min_fly_h // 2)
@@ -125,6 +132,13 @@ class StaticFlyDetector:
             x, y, w, h = cv2.boundingRect(contour)
             if w < self.min_paper_w or h < self.min_paper_h:
                 continue
+            # Letter / A4 held portrait: taller than wide.
+            paper_aspect = h / float(w) if w else 0.0
+            if self.require_portrait:
+                if h <= w:
+                    continue
+                if paper_aspect < self.min_paper_aspect or paper_aspect > self.max_paper_aspect:
+                    continue
             area = cv2.contourArea(contour)
             # Lenient fill: wrinkled / angled paper still counts.
             if area < 0.20 * w * h:
@@ -166,11 +180,12 @@ class StaticFlyDetector:
         if soft_papers:
             return soft_papers
 
-        # Last resort: whole-frame "paper" if the image is mostly bright.
+        # Last resort: whole-frame "paper" only if the frame itself is portrait-ish.
         if float(np.mean(blurred)) >= self.white_threshold - 25:
             h, w = gray.shape[:2]
             if w >= self.min_paper_w // 2 and h >= self.min_paper_h // 2:
-                return [PaperBox(0, 0, w, h)]
+                if (not self.require_portrait) or (h > w):
+                    return [PaperBox(0, 0, w, h)]
         return []
 
     def _flies_on_paper(
@@ -356,16 +371,6 @@ def draw_flies(
                 (220, 220, 220),
                 1,
             )
-            cv2.putText(
-                out,
-                f"paper {paper.w}x{paper.h}",
-                (paper.x, max(0, paper.y - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (200, 200, 200),
-                1,
-                cv2.LINE_AA,
-            )
 
     for i, fly in enumerate(flies):
         is_selected = selected_index is not None and i == selected_index
@@ -395,7 +400,7 @@ def draw_flies(
         )
     cv2.putText(
         out,
-        f"flies: {len(flies)}  papers: {len(paper_list or [])}",
+        f"flies: {len(flies)}",
         (10, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.65,

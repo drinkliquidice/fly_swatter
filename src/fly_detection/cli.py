@@ -362,6 +362,9 @@ def cmd_target_flies(args: argparse.Namespace) -> int:
         white_threshold=args.white_threshold,
         dark_threshold=args.dark_threshold,
         confirm_frames=args.confirm_frames,
+        require_portrait=not args.allow_landscape_paper,
+        min_paper_aspect=args.min_paper_aspect,
+        max_paper_aspect=args.max_paper_aspect,
     )
 
     def _draw(frame, flies, selected_index=None):
@@ -538,7 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_flies = sub.add_parser(
         "target-flies",
-        help="Scan/track printed flies on white paper (≥20x20 on ≥300x300)",
+        help="Scan/track printed flies on portrait letter/A4 paper",
     )
     add_shared(p_flies)
     p_flies.add_argument(
@@ -556,14 +559,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_flies.add_argument(
         "--min-paper-w",
         type=int,
-        default=220,
-        help="Min white paper width in pixels (lenient; aim for ~300 when close)",
+        default=180,
+        help="Min paper width in pixels (portrait letter/A4)",
     )
     p_flies.add_argument(
         "--min-paper-h",
         type=int,
-        default=220,
-        help="Min white paper height in pixels",
+        default=260,
+        help="Min paper height in pixels (portrait letter/A4)",
+    )
+    p_flies.add_argument(
+        "--min-paper-aspect",
+        type=float,
+        default=1.15,
+        help="Min paper height/width (letter≈1.29, A4≈1.41)",
+    )
+    p_flies.add_argument(
+        "--max-paper-aspect",
+        type=float,
+        default=1.75,
+        help="Max paper height/width (allows camera perspective)",
+    )
+    p_flies.add_argument(
+        "--allow-landscape-paper",
+        action="store_true",
+        help="Disable portrait-only paper filter",
     )
     p_flies.add_argument(
         "--white-threshold",
