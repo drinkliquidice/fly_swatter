@@ -10,6 +10,7 @@ from typing import Callable, List, Optional, Tuple
 
 from .face_pipeline import FaceDetector, draw_faces
 from .fly_pipeline import StaticFlyDetector, draw_flies
+from .pid import PID
 from .target import AimTarget, aim_target_from_args, draw_target
 
 
@@ -97,6 +98,10 @@ def _run_target_loop(
     shot_this_lock = False
     shoot_thread: Optional[threading.Thread] = None
     shoot_error: list[BaseException] = []
+    # P-only PID lock (ki=kd=0) on pixel error for pan (X) and tilt (Y).
+    pid_x = PID(kp=args.kp, ki=0.0, kd=0.0)
+    pid_y = PID(kp=args.kp, ki=0.0, kd=0.0)
+    last_pid_t = time.monotonic()
 
     scan_range = max(1, int(round(args.scan_degrees / 360.0 * STEPS_PER_REV)))
     scan_pos = 0
@@ -202,9 +207,12 @@ def _run_target_loop(
                         motors.tilt_stop()
                         state = TrackState.TRACKING
                         shot_this_lock = False
+                        pid_x.reset()
+                        pid_y.reset()
+                        last_pid_t = time.monotonic()
                         print(
                             f"Target locked ({mode_name}) — "
-                            "centering with motor1 (X) + motor2 (Y)."
+                            f"PID lock (kp={args.kp}) on motor1 (X) + motor2 (Y)."
                         )
 
                     on_x = abs(dx) <= args.target_radius
@@ -235,16 +243,21 @@ def _run_target_loop(
                         ):
                             shot_this_lock = False
 
-                        gain = args.track_gain
+                        now_pid = time.monotonic()
+                        dt = max(1e-3, now_pid - last_pid_t)
+                        last_pid_t = now_pid
+
                         pan_steps = 0
                         tilt_steps = 0
                         pan_cw = True
                         tilt_cw = True
 
                         if not on_x:
-                            raw = int(round(abs(dx) * spp_x * gain))
+                            # P-only PID on pixel error → motor half-steps.
+                            u_x = pid_x.update(float(dx), dt=dt)
+                            raw = int(round(abs(u_x) * spp_x))
                             pan_steps = max(1, min(raw, args.max_track_steps))
-                            pan_cw = (dx < 0) ^ args.invert_pan
+                            pan_cw = (u_x < 0) ^ args.invert_pan
                             scan_pos = int(
                                 max(
                                     0,
@@ -255,11 +268,16 @@ def _run_target_loop(
                                     ),
                                 )
                             )
+                        else:
+                            pid_x.reset()
 
                         if not on_y:
-                            raw = int(round(abs(dy) * spp_y * gain))
+                            u_y = pid_y.update(float(dy), dt=dt)
+                            raw = int(round(abs(u_y) * spp_y))
                             tilt_steps = max(1, min(raw, args.max_track_steps))
-                            tilt_cw = (dy < 0) ^ args.invert_tilt
+                            tilt_cw = (u_y < 0) ^ args.invert_tilt
+                        else:
+                            pid_y.reset()
 
                         motors.correct_aim(
                             pan_steps=pan_steps,
@@ -269,9 +287,9 @@ def _run_target_loop(
                             delay=args.step_delay,
                         )
                         status = (
-                            f"SHOOTING + TRACKING dx={dx} dy={dy}"
+                            f"SHOOTING + PID dx={dx} dy={dy}"
                             if shooting
-                            else f"TRACKING dx={dx} dy={dy} "
+                            else f"PID dx={dx} dy={dy} "
                             f"pan={pan_steps} tilt={tilt_steps}"
                         )
                         _put_status(overlay, status)
@@ -284,6 +302,8 @@ def _run_target_loop(
                     ):
                         state = TrackState.SEARCHING
                         shot_this_lock = False
+                        pid_x.reset()
+                        pid_y.reset()
                         motors.tilt_stop()
                         print("Target lost — resuming pan sweep.")
 
@@ -454,10 +474,11 @@ def build_parser() -> argparse.ArgumentParser:
             ),
         )
         p.add_argument(
+            "--kp",
             "--track-gain",
             type=float,
             default=0.1,
-            help="Proportional gain for pan/tilt corrections (default: 0.1)",
+            help="PID proportional gain for pan/tilt lock (P-only; default: 0.1)",
         )
         p.add_argument(
             "--scan-degrees",
