@@ -55,29 +55,28 @@ class FlyBox:
 
 class StaticFlyDetector:
     """
-    Detect printed flies on white paper.
+    Detect printed flies on white paper (lenient defaults for real lighting).
 
-    A valid target requires:
-      - a white paper region at least ``min_paper_w`` x ``min_paper_h`` (default 300x300)
-      - a dark fly blob on that paper at least ``min_fly_w`` x ``min_fly_h`` (default 20x20)
+    A valid target prefers:
+      - a bright paper region around ``min_paper_w`` x ``min_paper_h``
+      - a darker printed fly on that paper at least ``min_fly_w`` x ``min_fly_h``
     """
 
     def __init__(
         self,
-        min_fly_w: int = 20,
-        min_fly_h: int = 20,
-        max_fly_w: int = 120,
-        max_fly_h: int = 120,
-        min_paper_w: int = 300,
-        min_paper_h: int = 300,
-        white_threshold: int = 200,
-        dark_threshold: int = 110,
+        min_fly_w: int = 15,
+        min_fly_h: int = 15,
+        max_fly_w: int = 220,
+        max_fly_h: int = 220,
+        min_paper_w: int = 220,
+        min_paper_h: int = 220,
+        white_threshold: int = 155,
+        dark_threshold: int = 150,
         blur_ksize: int = 5,
-        min_aspect: float = 0.35,
-        max_aspect: float = 2.8,
-        confirm_frames: int = 3,
-        match_distance: float = 28.0,
-        # Back-compat aliases used by older CLI flags:
+        min_aspect: float = 0.2,
+        max_aspect: float = 5.0,
+        confirm_frames: int = 1,
+        match_distance: float = 48.0,
         min_area: int | None = None,
         max_area: int | None = None,
     ) -> None:
@@ -96,10 +95,9 @@ class StaticFlyDetector:
         self.max_aspect = max_aspect
         self.confirm_frames = max(1, confirm_frames)
         self.match_distance = match_distance
-        # Optional area clamps if callers still pass them.
-        self.min_area = min_area if min_area is not None else min_fly_w * min_fly_h
+        self.min_area = min_area if min_area is not None else max(40, min_fly_w * min_fly_h // 2)
         self.max_area = max_area if max_area is not None else max_fly_w * max_fly_h
-        self._history: Deque[List[FlyBox]] = deque(maxlen=self.confirm_frames)
+        self._history: Deque[List[FlyBox]] = deque(maxlen=max(self.confirm_frames, 1))
         self.last_papers: List[PaperBox] = []
 
     def reset(self) -> None:
@@ -113,31 +111,66 @@ class StaticFlyDetector:
             raise FileNotFoundError(f"Could not read image: {path}")
         return image
 
-    def _find_papers(self, gray: np.ndarray) -> List[PaperBox]:
-        # Bright regions = paper. Slight blur reduces print-edge noise.
-        blurred = cv2.GaussianBlur(gray, (self.blur_ksize, self.blur_ksize), 0)
-        _, white = cv2.threshold(
-            blurred, self.white_threshold, 255, cv2.THRESH_BINARY
-        )
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-        white = cv2.morphologyEx(white, cv2.MORPH_CLOSE, kernel, iterations=2)
-        white = cv2.morphologyEx(white, cv2.MORPH_OPEN, kernel, iterations=1)
+    def _paper_candidates_from_mask(self, mask: np.ndarray) -> List[PaperBox]:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
         contours, _ = cv2.findContours(
-            white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         papers: List[PaperBox] = []
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
             if w < self.min_paper_w or h < self.min_paper_h:
                 continue
-            # Paper should be reasonably rectangular / large filled area.
             area = cv2.contourArea(contour)
-            if area < 0.45 * w * h:
+            # Lenient fill: wrinkled / angled paper still counts.
+            if area < 0.20 * w * h:
                 continue
             papers.append(PaperBox(int(x), int(y), int(w), int(h)))
         papers.sort(key=lambda p: p.w * p.h, reverse=True)
         return papers
+
+    def _find_papers(self, gray: np.ndarray) -> List[PaperBox]:
+        blurred = cv2.GaussianBlur(gray, (self.blur_ksize, self.blur_ksize), 0)
+
+        # Pass 1: fixed bright threshold (works in even lighting).
+        _, white = cv2.threshold(
+            blurred, self.white_threshold, 255, cv2.THRESH_BINARY
+        )
+        papers = self._paper_candidates_from_mask(white)
+        if papers:
+            return papers
+
+        # Pass 2: adaptive threshold for uneven / dim lighting.
+        adaptive = cv2.adaptiveThreshold(
+            blurred,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            51,
+            -5,
+        )
+        papers = self._paper_candidates_from_mask(adaptive)
+        if papers:
+            return papers
+
+        # Pass 3: take the brightest large connected region even if under size.
+        # Helps when paper is partially out of frame but still mostly visible.
+        _, soft = cv2.threshold(
+            blurred, max(120, self.white_threshold - 40), 255, cv2.THRESH_BINARY
+        )
+        soft_papers = self._paper_candidates_from_mask(soft)
+        if soft_papers:
+            return soft_papers
+
+        # Last resort: whole-frame "paper" if the image is mostly bright.
+        if float(np.mean(blurred)) >= self.white_threshold - 25:
+            h, w = gray.shape[:2]
+            if w >= self.min_paper_w // 2 and h >= self.min_paper_h // 2:
+                return [PaperBox(0, 0, w, h)]
+        return []
 
     def _flies_on_paper(
         self, gray: np.ndarray, paper: PaperBox
@@ -148,13 +181,20 @@ class StaticFlyDetector:
             return []
 
         blurred = cv2.GaussianBlur(roi, (self.blur_ksize, self.blur_ksize), 0)
-        # Dark print on white paper.
-        _, dark = cv2.threshold(
+
+        # Combine fixed + Otsu dark masks so gray prints still show up.
+        _, fixed = cv2.threshold(
             blurred, self.dark_threshold, 255, cv2.THRESH_BINARY_INV
         )
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        _, otsu = cv2.threshold(
+            blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+        dark = cv2.bitwise_or(fixed, otsu)
+
+        # Light cleanup only — avoid erasing thin printed flies.
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, kernel, iterations=1)
-        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, kernel, iterations=1)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, kernel, iterations=2)
 
         contours, _ = cv2.findContours(
             dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -169,19 +209,32 @@ class StaticFlyDetector:
             area = cv2.contourArea(contour)
             if area < self.min_area or area > self.max_area:
                 continue
-            # Reject blobs that are basically the whole paper (shadows / frames).
-            if w * h > 0.25 * pw * ph:
+            # Only reject near-full-paper blobs (shadows / borders).
+            if w * h > 0.55 * pw * ph:
                 continue
             aspect = w / float(h) if h else 0.0
             if aspect < self.min_aspect or aspect > self.max_aspect:
                 continue
+
+            # Prefer blobs darker than the local paper average.
+            patch = blurred[y : y + h, x : x + w]
+            if patch.size == 0:
+                continue
+            local_mean = float(np.mean(patch))
+            paper_mean = float(np.mean(blurred))
+            if local_mean > paper_mean - 8:
+                continue
+
             peri = cv2.arcLength(contour, True)
             circularity = (
                 0.0 if peri == 0 else (4.0 * np.pi * area) / (peri * peri)
             )
+            contrast = max(0.0, (paper_mean - local_mean) / 80.0)
             score = float(
                 np.clip(
-                    0.35 * circularity + 0.65 * (1.0 - abs(1.0 - aspect)),
+                    0.25 * circularity
+                    + 0.35 * (1.0 - abs(1.0 - aspect))
+                    + 0.40 * contrast,
                     0,
                     1,
                 )
@@ -330,10 +383,10 @@ def draw_flies(
         )
     cv2.putText(
         out,
-        f"flies: {len(flies)}",
+        f"flies: {len(flies)}  papers: {len(paper_list or [])}",
         (10, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.65,
         (255, 255, 255),
         2,
         cv2.LINE_AA,

@@ -542,46 +542,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_shared(p_flies)
     p_flies.add_argument(
-        "--min-fly-w", type=int, default=20, help="Min fly width in pixels"
+        "--min-fly-w", type=int, default=15, help="Min fly width in pixels"
     )
     p_flies.add_argument(
-        "--min-fly-h", type=int, default=20, help="Min fly height in pixels"
+        "--min-fly-h", type=int, default=15, help="Min fly height in pixels"
     )
     p_flies.add_argument(
-        "--max-fly-w", type=int, default=120, help="Max fly width in pixels"
+        "--max-fly-w", type=int, default=220, help="Max fly width in pixels"
     )
     p_flies.add_argument(
-        "--max-fly-h", type=int, default=120, help="Max fly height in pixels"
+        "--max-fly-h", type=int, default=220, help="Max fly height in pixels"
     )
     p_flies.add_argument(
         "--min-paper-w",
         type=int,
-        default=300,
-        help="Min white paper width in pixels",
+        default=220,
+        help="Min white paper width in pixels (lenient; aim for ~300 when close)",
     )
     p_flies.add_argument(
         "--min-paper-h",
         type=int,
-        default=300,
+        default=220,
         help="Min white paper height in pixels",
     )
     p_flies.add_argument(
         "--white-threshold",
         type=int,
-        default=200,
+        default=155,
         help="Grayscale cutoff for paper (brighter = paper)",
     )
     p_flies.add_argument(
         "--dark-threshold",
         type=int,
-        default=110,
+        default=150,
         help="Grayscale cutoff for printed fly on the paper",
     )
     p_flies.add_argument(
         "--confirm-frames",
         type=int,
-        default=3,
-        help="Frames a fly must persist to count as static",
+        default=1,
+        help="Frames a fly must persist (1 = immediate)",
     )
     p_flies.set_defaults(func=cmd_target_flies)
 
