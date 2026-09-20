@@ -70,27 +70,36 @@ def _run_target_loop(
     draw_fn: Callable,
 ) -> int:
     """
-    Motor1 continuously pans while searching.
+    Motor1 pans back and forth across a scan arc while searching.
 
-    On target lock: stop the scan and keep the target centered in the frame
-    (1:1 camera↔motor yaw). Motor2 is unused. Motors 3/4 are available via
-    TurretMotors.wind() but are not driven in this loop yet.
+    On target lock: stop the scan and keep the target centered in the
+    upright frame (camera mount rotation is corrected in OakCamera).
     """
     from .oak_camera import OakCamera, destroy_windows, show_frame
-    from turret_control import steps_per_pixel
+    from turret_control import STEPS_PER_REV, steps_per_pixel
 
     aim = _aim_from_namespace(args)
     motors = _build_motors(args)
     state = TrackState.SEARCHING
     lost_frames = 0
-    spp: Optional[float] = None  # steps per pixel, set once we know width
+    spp: Optional[float] = None
+
+    scan_range = max(1, int(round(args.scan_degrees / 360.0 * STEPS_PER_REV)))
+    scan_pos = 0  # steps from the CCW end of the sweep
+    scan_dir = 1  # +1 toward CW end, -1 toward CCW end
 
     print(
-        f"target-{mode_name}: motor1 scans until a target is found, "
+        f"target-{mode_name}: motor1 sweeps ±{args.scan_degrees:.0f}° until a "
+        f"target is found (camera mount {args.mount_rotate_ccw}° CCW corrected), "
         "then holds it centered. Press 'q' or Esc to quit."
     )
     try:
-        with OakCamera(width=args.width, height=args.height, fps=args.fps) as cam:
+        with OakCamera(
+            width=args.width,
+            height=args.height,
+            fps=args.fps,
+            mount_rotate_ccw_deg=args.mount_rotate_ccw,
+        ) as cam:
             while True:
                 ok, frame = cam.read()
                 if not ok or frame is None:
@@ -119,11 +128,19 @@ def _run_target_loop(
                         motors.pan_stop()
                         _put_status(overlay, "TRACKING on-center")
                     else:
-                        # 1:1 pan: pixel error → motor steps.
                         raw_steps = int(round(abs(dx) * spp))
                         steps = max(1, min(raw_steps, args.max_track_steps))
-                        # Positive dx => target is right of aim. Default: CW pans right.
                         move_cw = (dx > 0) ^ args.invert_pan
+                        # Logical sweep position (independent of invert-pan wiring).
+                        scan_pos = int(
+                            max(
+                                0,
+                                min(
+                                    scan_range,
+                                    scan_pos + (steps if dx > 0 else -steps),
+                                ),
+                            )
+                        )
                         motors.pan_step(
                             steps,
                             clockwise=move_cw,
@@ -140,15 +157,37 @@ def _run_target_loop(
                         and lost_frames >= args.lost_frames
                     ):
                         state = TrackState.SEARCHING
-                        print("Target lost — resuming motor1 scan.")
+                        print("Target lost — resuming 90° back-and-forth scan.")
 
                     if state is TrackState.SEARCHING:
+                        if scan_dir > 0 and scan_pos >= scan_range:
+                            scan_dir = -1
+                        elif scan_dir < 0 and scan_pos <= 0:
+                            scan_dir = 1
+
+                        if scan_dir > 0:
+                            remaining = scan_range - scan_pos
+                        else:
+                            remaining = scan_pos
+                        steps = min(args.scan_steps, max(remaining, 0))
+                        if steps <= 0:
+                            scan_dir *= -1
+                            steps = min(args.scan_steps, scan_range)
+
+                        move_cw = (scan_dir > 0) ^ args.invert_pan
                         motors.pan_step(
-                            args.scan_steps,
-                            clockwise=not args.scan_ccw,
+                            steps,
+                            clockwise=move_cw,
                             delay=args.step_delay,
                         )
-                        _put_status(overlay, "SEARCHING (motor1 spinning)")
+                        scan_pos = int(
+                            max(0, min(scan_range, scan_pos + scan_dir * steps))
+                        )
+                        deg = scan_pos / STEPS_PER_REV * 360.0
+                        _put_status(
+                            overlay,
+                            f"SEARCHING sweep {deg:.0f}/{args.scan_degrees:.0f} deg",
+                        )
                     else:
                         motors.pan_stop()
                         _put_status(overlay, "TRACKING (target briefly lost)")
@@ -236,21 +275,32 @@ def build_parser() -> argparse.ArgumentParser:
             help="Deadzone pixels counted as centered",
         )
         p.add_argument(
+            "--mount-rotate-ccw",
+            type=int,
+            default=90,
+            choices=(0, 90, 180, 270),
+            help="Physical camera mount rotation CCW degrees (default: 90)",
+        )
+        p.add_argument(
             "--fov",
             type=float,
-            default=69.0,
-            help="Camera horizontal FOV in degrees (for 1:1 pan steps)",
+            default=55.0,
+            help=(
+                "Upright horizontal FOV in degrees after mount correction "
+                "(OAK-1 ~55° once rotated 90°; was ~69° before rotation)"
+            ),
+        )
+        p.add_argument(
+            "--scan-degrees",
+            type=float,
+            default=90.0,
+            help="Search sweep arc in degrees (back and forth, default: 90)",
         )
         p.add_argument(
             "--scan-steps",
             type=int,
             default=8,
             help="Motor1 steps between frames while searching",
-        )
-        p.add_argument(
-            "--scan-ccw",
-            action="store_true",
-            help="Search by spinning motor1 counter-clockwise",
         )
         p.add_argument(
             "--max-track-steps",
@@ -267,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--invert-pan",
             action="store_true",
-            help="Invert motor1 direction relative to pixel error",
+            help="Invert motor1 direction relative to pixel error / scan",
         )
         p.add_argument(
             "--lost-frames",
