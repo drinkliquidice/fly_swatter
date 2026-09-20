@@ -150,8 +150,8 @@ def _run_target_loop(
                         if not on_x:
                             raw = int(round(abs(dx) * spp_x * gain))
                             pan_steps = max(1, min(raw, args.max_track_steps))
-                            # Motor1 is geared opposite the camera pan output.
-                            pan_cw = (dx < 0) ^ args.invert_pan
+                            # Positive dx => target right of aim.
+                            pan_cw = (dx > 0) ^ args.invert_pan
                             scan_pos = int(
                                 max(
                                     0,
@@ -205,8 +205,7 @@ def _run_target_loop(
                             scan_dir *= -1
                             steps = min(args.scan_steps, scan_range)
 
-                        # Motor1 geared opposite: reverse physical direction.
-                        move_cw = (scan_dir < 0) ^ args.invert_pan
+                        move_cw = (scan_dir > 0) ^ args.invert_pan
                         motors.pan_step(
                             steps,
                             clockwise=move_cw,
@@ -365,10 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--invert-pan",
             action="store_true",
-            help=(
-                "Invert motor1 (pan/X) direction "
-                "(already accounts for opposite gearing by default)"
-            ),
+            help="Invert motor1 (pan/X) direction",
         )
         p.add_argument(
             "--invert-tilt",
