@@ -1,4 +1,4 @@
-"""CLI: scan + center-track faces or flies with motor1 pan."""
+"""CLI: scan + XY center-track faces or flies (pan M1, tilt M2)."""
 
 from __future__ import annotations
 
@@ -72,8 +72,9 @@ def _run_target_loop(
     """
     Motor1 pans back and forth across a scan arc while searching.
 
-    On target lock: stop the scan and keep the target centered in the
-    upright frame (camera mount rotation is corrected in OakCamera).
+    On target lock: keep the target centered in X (motor1 pan) and Y
+    (motor2 tilt) with proportional control. Camera sits above the turret
+    output, so both axes move the view.
     """
     from .oak_camera import OakCamera, destroy_windows, show_frame
     from turret_control import STEPS_PER_REV, steps_per_pixel
@@ -82,16 +83,18 @@ def _run_target_loop(
     motors = _build_motors(args)
     state = TrackState.SEARCHING
     lost_frames = 0
-    spp: Optional[float] = None
+    spp_x: Optional[float] = None
+    spp_y: Optional[float] = None
 
     scan_range = max(1, int(round(args.scan_degrees / 360.0 * STEPS_PER_REV)))
     scan_pos = 0  # steps from the CCW end of the sweep
     scan_dir = 1  # +1 toward CW end, -1 toward CCW end
 
     print(
-        f"target-{mode_name}: motor1 sweeps ±{args.scan_degrees:.0f}° until a "
+        f"target-{mode_name}: motor1 sweeps {args.scan_degrees:.0f}° until a "
         f"target is found (camera mount {args.mount_rotate_ccw}° CCW corrected), "
-        "then holds it centered. Press 'q' or Esc to quit."
+        "then centers X+Y with motor1 pan + motor2 tilt. "
+        "Press 'q' or Esc to quit."
     )
     try:
         with OakCamera(
@@ -106,8 +109,10 @@ def _run_target_loop(
                     time.sleep(0.002)
                     continue
 
-                if spp is None:
-                    spp = steps_per_pixel(frame.shape[1], fov_deg=args.fov)
+                if spp_x is None or spp_y is None:
+                    h, w = frame.shape[:2]
+                    spp_x = steps_per_pixel(w, fov_deg=args.fov)
+                    spp_y = steps_per_pixel(h, fov_deg=args.fov_v)
 
                 detections = detect_fn(frame)
                 centers = [d.center for d in detections]
@@ -117,38 +122,63 @@ def _run_target_loop(
 
                 if sel_xy is not None:
                     lost_frames = 0
-                    dx, _dy, _dist = aim.error_to(sel_xy, frame.shape)
+                    dx, dy, _dist = aim.error_to(sel_xy, frame.shape)
 
                     if state is TrackState.SEARCHING:
                         motors.pan_stop()
+                        motors.tilt_stop()
                         state = TrackState.TRACKING
-                        print(f"Target locked ({mode_name}) — centering with motor1.")
+                        print(
+                            f"Target locked ({mode_name}) — "
+                            "centering with motor1 (X) + motor2 (Y)."
+                        )
 
-                    if abs(dx) <= args.target_radius:
+                    on_x = abs(dx) <= args.target_radius
+                    on_y = abs(dy) <= args.target_radius
+
+                    if on_x and on_y:
                         motors.pan_stop()
+                        motors.tilt_stop()
                         _put_status(overlay, "TRACKING on-center")
                     else:
-                        raw_steps = int(round(abs(dx) * spp))
-                        steps = max(1, min(raw_steps, args.max_track_steps))
-                        move_cw = (dx > 0) ^ args.invert_pan
-                        # Logical sweep position (independent of invert-pan wiring).
-                        scan_pos = int(
-                            max(
-                                0,
-                                min(
-                                    scan_range,
-                                    scan_pos + (steps if dx > 0 else -steps),
-                                ),
+                        gain = args.track_gain
+                        pan_steps = 0
+                        tilt_steps = 0
+                        pan_cw = True
+                        tilt_cw = True
+
+                        if not on_x:
+                            raw = int(round(abs(dx) * spp_x * gain))
+                            pan_steps = max(1, min(raw, args.max_track_steps))
+                            pan_cw = (dx > 0) ^ args.invert_pan
+                            scan_pos = int(
+                                max(
+                                    0,
+                                    min(
+                                        scan_range,
+                                        scan_pos + (pan_steps if dx > 0 else -pan_steps),
+                                    ),
+                                )
                             )
-                        )
-                        motors.pan_step(
-                            steps,
-                            clockwise=move_cw,
+
+                        if not on_y:
+                            raw = int(round(abs(dy) * spp_y * gain))
+                            tilt_steps = max(1, min(raw, args.max_track_steps))
+                            # Motor2 is geared opposite the turret output, so the
+                            # motor must run the opposite way of the desired tilt.
+                            tilt_cw = (dy < 0) ^ args.invert_tilt
+
+                        motors.correct_aim(
+                            pan_steps=pan_steps,
+                            pan_cw=pan_cw,
+                            tilt_steps=tilt_steps,
+                            tilt_cw=tilt_cw,
                             delay=args.step_delay,
                         )
                         _put_status(
                             overlay,
-                            f"TRACKING dx={dx} steps={steps}",
+                            f"TRACKING dx={dx} dy={dy} "
+                            f"pan={pan_steps} tilt={tilt_steps}",
                         )
                 else:
                     lost_frames += 1
@@ -157,7 +187,8 @@ def _run_target_loop(
                         and lost_frames >= args.lost_frames
                     ):
                         state = TrackState.SEARCHING
-                        print("Target lost — resuming 90° back-and-forth scan.")
+                        motors.tilt_stop()
+                        print("Target lost — resuming pan sweep.")
 
                     if state is TrackState.SEARCHING:
                         if scan_dir > 0 and scan_pos >= scan_range:
@@ -190,6 +221,7 @@ def _run_target_loop(
                         )
                     else:
                         motors.pan_stop()
+                        motors.tilt_stop()
                         _put_status(overlay, "TRACKING (target briefly lost)")
 
                 if not show_frame(window_title, overlay):
@@ -234,8 +266,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fly_swatter",
         description=(
-            "Scan with motor1 until a face or fly is found, then keep it "
-            "centered in the camera frame"
+            "Scan with motor1 until a face or fly is found, then center it "
+            "in X (pan) and Y (tilt) with proportional control"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -287,8 +319,23 @@ def build_parser() -> argparse.ArgumentParser:
             default=55.0,
             help=(
                 "Upright horizontal FOV in degrees after mount correction "
-                "(OAK-1 ~55° once rotated 90°; was ~69° before rotation)"
+                "(used for pan / X)"
             ),
+        )
+        p.add_argument(
+            "--fov-v",
+            type=float,
+            default=69.0,
+            help=(
+                "Upright vertical FOV in degrees after mount correction "
+                "(used for tilt / Y)"
+            ),
+        )
+        p.add_argument(
+            "--track-gain",
+            type=float,
+            default=0.1,
+            help="Proportional gain for pan/tilt corrections (default: 0.1)",
         )
         p.add_argument(
             "--scan-degrees",
@@ -306,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--max-track-steps",
             type=int,
             default=64,
-            help="Max motor1 steps per frame while correcting aim",
+            help="Max pan or tilt steps per frame while correcting aim",
         )
         p.add_argument(
             "--step-delay",
@@ -317,7 +364,15 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--invert-pan",
             action="store_true",
-            help="Invert motor1 direction relative to pixel error / scan",
+            help="Invert motor1 (pan/X) direction",
+        )
+        p.add_argument(
+            "--invert-tilt",
+            action="store_true",
+            help=(
+                "Invert motor2 (tilt/Y) direction "
+                "(already accounts for opposite gearing by default)"
+            ),
         )
         p.add_argument(
             "--lost-frames",

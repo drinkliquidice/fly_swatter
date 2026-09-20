@@ -8,8 +8,8 @@ from typing import List, Optional, Sequence, Tuple
 from gpiozero import OutputDevice
 
 # BCM pin map from the Pi 5 header wiring (IN1, IN2, IN3, IN4).
-MOTOR1_PINS = (17, 27, 22, 23)  # pan / camera yaw
-MOTOR2_PINS = (10, 9, 11, 25)   # turret aim (API stub for now)
+MOTOR1_PINS = (17, 27, 22, 23)  # pan / side-to-side (yaw)
+MOTOR2_PINS = (10, 9, 11, 25)   # turret elevation / up-down (pitch)
 MOTOR3_PINS = (5, 6, 13, 12)    # spring / rubber-band wind
 MOTOR4_PINS = (19, 16, 26, 20)  # opposing wind (mirrors motor 3)
 
@@ -101,8 +101,8 @@ class TurretMotors:
     """
     Named access to all four steppers.
 
-    - motor1: camera pan (1:1 with camera yaw) — scan + center track
-    - motor2: turret elevation / aim (stub until kinematics known)
+    - motor1: pan (side-to-side) — search sweep + X tracking
+    - motor2: turret elevation (up-down) — Y tracking
     - motor3 + motor4: opposing spring/rubber-band winders
     """
 
@@ -119,7 +119,7 @@ class TurretMotors:
         self.motor4 = MaxSpeed5VStepper(*pins[3])
         self.motors = [self.motor1, self.motor2, self.motor3, self.motor4]
 
-    # --- Motor 1: camera pan -------------------------------------------------
+    # --- Motor 1: pan (X) ----------------------------------------------------
 
     def pan_step(
         self,
@@ -132,19 +132,66 @@ class TurretMotors:
     def pan_stop(self) -> None:
         self.motor1.stop()
 
-    # --- Motor 2: turret (stub) ----------------------------------------------
+    # --- Motor 2: elevation / tilt (Y) ---------------------------------------
 
+    def tilt_step(
+        self,
+        steps: int = 1,
+        clockwise: bool = True,
+        delay: float = DEFAULT_STEP_DELAY,
+    ) -> None:
+        self.motor2.step(steps, clockwise=clockwise, delay=delay)
+
+    def tilt_stop(self) -> None:
+        self.motor2.stop()
+
+    # Back-compat aliases
     def turret_step(
         self,
         steps: int = 1,
         clockwise: bool = True,
         delay: float = DEFAULT_STEP_DELAY,
     ) -> None:
-        """Placeholder for future turret aiming on motor2."""
-        self.motor2.step(steps, clockwise=clockwise, delay=delay)
+        self.tilt_step(steps, clockwise=clockwise, delay=delay)
 
     def turret_stop(self) -> None:
-        self.motor2.stop()
+        self.tilt_stop()
+
+    def correct_aim(
+        self,
+        pan_steps: int = 0,
+        pan_cw: bool = True,
+        tilt_steps: int = 0,
+        tilt_cw: bool = True,
+        delay: float = DEFAULT_STEP_DELAY,
+    ) -> None:
+        """Interleave pan (M1) and tilt (M2) steps for XY centering."""
+        pan_steps = max(0, int(pan_steps))
+        tilt_steps = max(0, int(tilt_steps))
+        if pan_steps == 0 and tilt_steps == 0:
+            return
+        pan_seq = (
+            self.motor1.sequence
+            if pan_cw
+            else list(reversed(self.motor1.sequence))
+        )
+        tilt_seq = (
+            self.motor2.sequence
+            if tilt_cw
+            else list(reversed(self.motor2.sequence))
+        )
+        for i in range(max(pan_steps, tilt_steps)):
+            if i < pan_steps:
+                self.motor1._phase = (self.motor1._phase + 1) % 4
+                self.motor1._apply(pan_seq[self.motor1._phase])
+            if i < tilt_steps:
+                self.motor2._phase = (self.motor2._phase + 1) % 4
+                self.motor2._apply(tilt_seq[self.motor2._phase])
+            time.sleep(delay)
+        if pan_steps:
+            self.motor1.stop()
+        if tilt_steps:
+            self.motor2.stop()
 
     # --- Motors 3 + 4: opposing winders --------------------------------------
 
@@ -201,15 +248,16 @@ class TurretMotors:
 FourMotorTurret = TurretMotors
 
 
-def steps_per_pixel(frame_width: int, fov_deg: float = 69.0) -> float:
+def steps_per_pixel(frame_span: int, fov_deg: float = 69.0) -> float:
     """
-    Convert horizontal pixel error → motor1 steps for a 1:1 pan mount.
+    Convert pixel error along one axis → motor steps (1:1 mount).
 
-    OAK-1 color FOV is ~69° horizontal; override with ``--fov`` if calibrated.
+    Use frame width + horizontal FOV for pan (X), frame height + vertical
+    FOV for tilt (Y).
     """
-    if frame_width <= 0:
-        raise ValueError("frame_width must be positive")
-    return (STEPS_PER_REV / 360.0) * (fov_deg / float(frame_width))
+    if frame_span <= 0:
+        raise ValueError("frame_span must be positive")
+    return (STEPS_PER_REV / 360.0) * (fov_deg / float(frame_span))
 
 
 def parse_motor_pins(spec: str) -> Tuple[Tuple[int, int, int, int], ...]:
