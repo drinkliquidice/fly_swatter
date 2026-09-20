@@ -65,21 +65,25 @@ class StaticFlyDetector:
 
     def __init__(
         self,
-        min_fly_w: int = 15,
-        min_fly_h: int = 15,
-        max_fly_w: int = 220,
-        max_fly_h: int = 220,
-        min_paper_w: int = 180,
-        min_paper_h: int = 260,
-        white_threshold: int = 155,
-        dark_threshold: int = 150,
-        blur_ksize: int = 5,
-        min_aspect: float = 0.2,
-        max_aspect: float = 5.0,
+        min_fly_w: int = 10,
+        min_fly_h: int = 10,
+        max_fly_w: int = 280,
+        max_fly_h: int = 280,
+        min_paper_w: int = 160,
+        min_paper_h: int = 220,
+        white_threshold: int = 145,
+        dark_threshold: int = 175,
+        blur_ksize: int = 3,
+        min_aspect: float = 0.15,
+        max_aspect: float = 6.0,
         # Portrait letter/A4: height/width ≈ 1.29 (US Letter) to 1.41 (A4).
         require_portrait: bool = True,
-        min_paper_aspect: float = 1.15,
-        max_paper_aspect: float = 1.75,
+        min_paper_aspect: float = 1.10,
+        max_paper_aspect: float = 1.85,
+        # Fly must be within this fraction of paper half-size from center (0.35 ≈ middle 70%).
+        center_frac: float = 0.35,
+        # Pixel must be at least this much darker than paper median.
+        min_contrast: float = 4.0,
         confirm_frames: int = 1,
         match_distance: float = 48.0,
         min_area: int | None = None,
@@ -101,9 +105,11 @@ class StaticFlyDetector:
         self.require_portrait = require_portrait
         self.min_paper_aspect = min_paper_aspect
         self.max_paper_aspect = max_paper_aspect
+        self.center_frac = center_frac
+        self.min_contrast = min_contrast
         self.confirm_frames = max(1, confirm_frames)
         self.match_distance = match_distance
-        self.min_area = min_area if min_area is not None else max(40, min_fly_w * min_fly_h // 2)
+        self.min_area = min_area if min_area is not None else max(20, (min_fly_w * min_fly_h) // 3)
         self.max_area = max_area if max_area is not None else max_fly_w * max_fly_h
         self._history: Deque[List[FlyBox]] = deque(maxlen=max(self.confirm_frames, 1))
         self.last_papers: List[PaperBox] = []
@@ -141,7 +147,7 @@ class StaticFlyDetector:
                     continue
             area = cv2.contourArea(contour)
             # Lenient fill: wrinkled / angled paper still counts.
-            if area < 0.20 * w * h:
+            if area < 0.15 * w * h:
                 continue
             papers.append(PaperBox(int(x), int(y), int(w), int(h)))
         papers.sort(key=lambda p: p.w * p.h, reverse=True)
@@ -197,19 +203,33 @@ class StaticFlyDetector:
             return []
 
         blurred = cv2.GaussianBlur(roi, (self.blur_ksize, self.blur_ksize), 0)
+        paper_med = float(np.median(blurred))
+        paper_mean = float(np.mean(blurred))
 
-        # Combine fixed + Otsu dark masks so gray prints still show up.
+        # Relative-to-paper masks only. An absolute threshold above the paper
+        # brightness would mark the entire sheet as "dark".
+        rel_thr = paper_med - self.min_contrast
+        soft_thr = paper_med - max(3.0, self.min_contrast * 0.5)
+        dyn_abs = min(float(self.dark_threshold), rel_thr)
         _, fixed = cv2.threshold(
-            blurred, self.dark_threshold, 255, cv2.THRESH_BINARY_INV
+            blurred, dyn_abs, 255, cv2.THRESH_BINARY_INV
         )
-        _, otsu = cv2.threshold(
-            blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        relative = np.where(blurred < rel_thr, 255, 0).astype(np.uint8)
+        soft = np.where(blurred < soft_thr, 255, 0).astype(np.uint8)
+        adaptive = cv2.adaptiveThreshold(
+            blurred,
+            255,
+            cv2.ADAPTIVE_THRESH_MEAN_C,
+            cv2.THRESH_BINARY_INV,
+            31,
+            6,
         )
-        dark = cv2.bitwise_or(fixed, otsu)
+        # Prefer relative evidence; adaptive only where paper is also darker.
+        dark = cv2.bitwise_or(fixed, relative)
+        dark = cv2.bitwise_or(dark, soft)
+        dark = cv2.bitwise_or(dark, cv2.bitwise_and(adaptive, soft))
 
-        # Light cleanup only — avoid erasing thin printed flies.
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, kernel, iterations=1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, kernel, iterations=2)
 
         contours, _ = cv2.findContours(
@@ -225,43 +245,36 @@ class StaticFlyDetector:
             area = cv2.contourArea(contour)
             if area < self.min_area or area > self.max_area:
                 continue
-            # Only reject near-full-paper blobs (shadows / borders).
-            if w * h > 0.55 * pw * ph:
+            if w * h > 0.45 * pw * ph:
                 continue
             aspect = w / float(h) if h else 0.0
             if aspect < self.min_aspect or aspect > self.max_aspect:
                 continue
 
-            # Printed fly must sit near the center of the paper.
             fly_cx = x + w / 2.0
             fly_cy = y + h / 2.0
-            paper_cx = pw / 2.0
-            paper_cy = ph / 2.0
-            # Middle band: center 50% of paper width/height.
-            if abs(fly_cx - paper_cx) > 0.25 * pw:
+            if abs(fly_cx - pw / 2.0) > self.center_frac * pw:
                 continue
-            if abs(fly_cy - paper_cy) > 0.25 * ph:
+            if abs(fly_cy - ph / 2.0) > self.center_frac * ph:
                 continue
 
-            # Prefer blobs darker than the local paper average.
             patch = blurred[y : y + h, x : x + w]
             if patch.size == 0:
                 continue
             local_mean = float(np.mean(patch))
-            paper_mean = float(np.mean(blurred))
-            if local_mean > paper_mean - 8:
+            if local_mean > paper_mean - max(2.0, self.min_contrast * 0.35):
                 continue
 
             peri = cv2.arcLength(contour, True)
             circularity = (
                 0.0 if peri == 0 else (4.0 * np.pi * area) / (peri * peri)
             )
-            contrast = max(0.0, (paper_mean - local_mean) / 80.0)
+            contrast = max(0.0, (paper_mean - local_mean) / 50.0)
             score = float(
                 np.clip(
-                    0.25 * circularity
-                    + 0.35 * (1.0 - abs(1.0 - aspect))
-                    + 0.40 * contrast,
+                    0.20 * circularity
+                    + 0.30 * (1.0 - abs(1.0 - aspect))
+                    + 0.50 * contrast,
                     0,
                     1,
                 )

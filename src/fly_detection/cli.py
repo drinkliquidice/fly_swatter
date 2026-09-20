@@ -551,27 +551,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_shared(p_flies)
     p_flies.add_argument(
-        "--min-fly-w", type=int, default=15, help="Min fly width in pixels"
+        "--min-fly-w", type=int, default=10, help="Min fly width in pixels"
     )
     p_flies.add_argument(
-        "--min-fly-h", type=int, default=15, help="Min fly height in pixels"
+        "--min-fly-h", type=int, default=10, help="Min fly height in pixels"
     )
     p_flies.add_argument(
-        "--max-fly-w", type=int, default=220, help="Max fly width in pixels"
+        "--max-fly-w", type=int, default=280, help="Max fly width in pixels"
     )
     p_flies.add_argument(
-        "--max-fly-h", type=int, default=220, help="Max fly height in pixels"
+        "--max-fly-h", type=int, default=280, help="Max fly height in pixels"
     )
     p_flies.add_argument(
         "--min-paper-w",
         type=int,
-        default=180,
+        default=160,
         help="Min paper width in pixels (portrait letter/A4)",
     )
     p_flies.add_argument(
         "--min-paper-h",
         type=int,
-        default=260,
+        default=220,
         help="Min paper height in pixels (portrait letter/A4)",
     )
     p_flies.add_argument(
@@ -594,14 +594,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_flies.add_argument(
         "--white-threshold",
         type=int,
-        default=155,
+        default=145,
         help="Grayscale cutoff for paper (brighter = paper)",
     )
     p_flies.add_argument(
         "--dark-threshold",
         type=int,
-        default=150,
-        help="Grayscale cutoff for printed fly on the paper",
+        default=175,
+        help="Grayscale cutoff for printed fly on the paper (higher = more sensitive)",
     )
     p_flies.add_argument(
         "--confirm-frames",
