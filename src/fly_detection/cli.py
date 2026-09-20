@@ -459,7 +459,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--scan-degrees",
             type=float,
-            default=145.0,
+            default=100.0,
             help="Search sweep arc in degrees (back and forth, default: 145)",
         )
         p.add_argument(

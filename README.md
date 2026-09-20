@@ -33,7 +33,7 @@ fly_swatter target-flies
 ```
 
 **Tracking behavior**
-1. Motor1 sweeps back and forth across a **145°** arc while searching
+1. Motor1 sweeps back and forth across a **100°** arc while searching
 2. On lock: proportional control centers the target on the crosshair in **X and Y**
    - Motor1 → pan (dx)
    - Motor2 → tilt (dy)
