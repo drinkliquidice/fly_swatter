@@ -265,10 +265,10 @@ class TurretMotors:
         """
         Fire the turret: advance from loaded (0) to shot (``steps``).
 
-        Release direction (tighten=False). Assumes ``wind_pos == 0``.
+        Assumes ``wind_pos == 0``.
         """
         print(f"SHOOT: winding {steps} full-steps (0 → {steps})...")
-        self.wind(steps, tighten=False, invert_m4=invert_m4, delay=delay, full_step=True)
+        self.wind(steps, tighten=True, invert_m4=invert_m4, delay=delay, full_step=True)
         self.wind_pos = steps
         print("SHOOT: fired.")
 
@@ -281,11 +281,9 @@ class TurretMotors:
     ) -> None:
         """
         Reload the turret: return from shot (``steps``) to loaded (0).
-
-        Tighten direction (tighten=True).
         """
         print(f"RELOAD: winding {steps} full-steps ({steps} → 0)...")
-        self.wind(steps, tighten=True, invert_m4=invert_m4, delay=delay, full_step=True)
+        self.wind(steps, tighten=False, invert_m4=invert_m4, delay=delay, full_step=True)
         self.wind_pos = 0
         print("RELOAD: loaded.")
 
