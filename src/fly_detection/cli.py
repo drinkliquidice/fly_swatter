@@ -150,8 +150,8 @@ def _run_target_loop(
                         if not on_x:
                             raw = int(round(abs(dx) * spp_x * gain))
                             pan_steps = max(1, min(raw, args.max_track_steps))
-                            # Positive dx => target right of aim.
-                            pan_cw = (dx > 0) ^ args.invert_pan
+                            # Geared axes: motor direction is opposite visual error.
+                            pan_cw = (dx < 0) ^ args.invert_pan
                             scan_pos = int(
                                 max(
                                     0,
@@ -165,8 +165,7 @@ def _run_target_loop(
                         if not on_y:
                             raw = int(round(abs(dy) * spp_y * gain))
                             tilt_steps = max(1, min(raw, args.max_track_steps))
-                            # Positive dy => target below aim.
-                            tilt_cw = (dy > 0) ^ args.invert_tilt
+                            tilt_cw = (dy < 0) ^ args.invert_tilt
 
                         motors.correct_aim(
                             pan_steps=pan_steps,
@@ -205,7 +204,7 @@ def _run_target_loop(
                             scan_dir *= -1
                             steps = min(args.scan_steps, scan_range)
 
-                        move_cw = (scan_dir > 0) ^ args.invert_pan
+                        move_cw = (scan_dir < 0) ^ args.invert_pan
                         motors.pan_step(
                             steps,
                             clockwise=move_cw,
