@@ -60,6 +60,7 @@ class StaticFlyDetector:
     A valid target prefers:
       - a bright paper region around ``min_paper_w`` x ``min_paper_h``
       - a darker printed fly on that paper at least ``min_fly_w`` x ``min_fly_h``
+      - the fly centered on the paper (middle 50% of the paper box)
     """
 
     def __init__(
@@ -214,6 +215,17 @@ class StaticFlyDetector:
                 continue
             aspect = w / float(h) if h else 0.0
             if aspect < self.min_aspect or aspect > self.max_aspect:
+                continue
+
+            # Printed fly must sit near the center of the paper.
+            fly_cx = x + w / 2.0
+            fly_cy = y + h / 2.0
+            paper_cx = pw / 2.0
+            paper_cy = ph / 2.0
+            # Middle band: center 50% of paper width/height.
+            if abs(fly_cx - paper_cx) > 0.25 * pw:
+                continue
+            if abs(fly_cy - paper_cy) > 0.25 * ph:
                 continue
 
             # Prefer blobs darker than the local paper average.

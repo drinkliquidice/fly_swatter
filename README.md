@@ -6,82 +6,58 @@ Hack The North 2026 Automatic Fly Detection Swatter
 
 - Raspberry Pi 5
 - Luxonis OAK-1 camera
-- 28BYJ-48 steppers + ULN2003 drivers (see `src/turret_control/motor.py`)
+- Four 28BYJ-48 + ULN2003 drivers
+
+### GPIO map (BCM)
+
+| Motor | Role                         | IN1 | IN2 | IN3 | IN4 |
+|-------|------------------------------|-----|-----|-----|-----|
+| M1    | Pan (side-to-side / X)       | 17  | 27  | 22  | 23  |
+| M2    | Tilt (up-down / Y)           | 10  | 9   | 11  | 25  |
+| M3    | Spring / rubber-band wind    | 5   | 6   | 13  | 12  |
+| M4    | Opposing wind (mirrors M3)   | 19  | 16  | 26  | 20  |
 
 ## Setup (conda)
 
-This project uses the `stepper` conda environment.
-
 ```bash
-cd flyswatter
-conda activate 
+cd fly_swatter
+conda activate flyswatter   # or stepper
 pip install -e .
 ```
 
-To create the env from scratch (or recreate it):
+## Commands
 
 ```bash
-conda env create -f environment.yml
-conda activate stepper
+fly_swatter target-face
+fly_swatter target-flies
 ```
 
-To update an existing `flyswatter` env after dependency changes:
+**Tracking behavior**
+1. Motor1 sweeps back and forth across a **145°** arc while searching
+2. On lock: proportional control centers the target on the crosshair in **X and Y**
+   - Motor1 → pan (dx)
+   - Motor2 → tilt (dy)
+3. When within **20 px**, Motors 3+4 **shoot** (0 → 5086 full-steps) then
+   **reload** (5086 → 0). Camera is mounted above the turret output.
+
+The OAK-1 is mounted **90° counter-clockwise**; frames are rotated upright
+automatically before detection/display.
+
+Quit with `q` / `Esc`.
+
+### Useful flags
 
 ```bash
-conda activate flyswatter
-pip install -e .
+fly_swatter target-face --track-gain 0.1 --target-radius 20
+fly_swatter target-face --shoot-steps 5086 --wind-delay 0.002
+fly_swatter target-face --invert-pan --invert-tilt
+fly_swatter target-flies --fov 55 --fov-v 69 --scan-degrees 145
 ```
-
-On the Pi you need a display (local HDMI or VNC) for the preview windows.
-If `cv2.imshow` fails with a Qt/GTK error, install the GUI OpenCV build inside the env:
-
-```bash
-conda activate flyswatter
-pip uninstall -y opencv-python-headless
-pip install "opencv-python>=4.8"
-```
-
-## Vision commands
-
-Activate the env first, then run:
-
-```bash
-conda activate flyswatter
-
-# 1. Raw OAK-1 camera feed
-fly-detect preview
-
-# 2. Face detection with boxes drawn on the live view
-fly-detect faces
-
-# 3. On face detection, rotate the stepper 180° (uses motor.py)
-fly-detect aim
-```
-
-Equivalent module form:
-
-```bash
-python -m fly_detection preview
-python -m fly_detection faces
-python -m fly_detection aim
-```
-
-Quit any window with `q` or `Esc`.
-
-### Aim options
-
-```bash
-fly-detect aim --cooldown 3 --in1 17 --in2 27 --in3 22 --in4 23
-fly-detect aim --no-clockwise   # opposite direction
-```
-
-`aim` triggers on a newly appearing face (rising edge) and waits `--cooldown`
-seconds before it will fire again.
 
 ## Layout
 
 ```
 src/
-  fly_detection/     # OAK camera + face pipeline (+ fly placeholder)
-  turret_control/    # stepper control
+  fly_detection/     # OAK camera, face/fly detectors, aim target, CLI
+  turret_control/    # pan (M1), tilt (M2), opposing wind (M3/M4)
 ```
