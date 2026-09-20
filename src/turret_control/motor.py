@@ -20,16 +20,28 @@ DEFAULT_MOTOR_PINS: Tuple[Tuple[int, int, int, int], ...] = (
     MOTOR4_PINS,
 )
 
-# 28BYJ-48 @ 2-phase full step: 2048 steps = 360°.
-STEPS_PER_REV = 2048
+# 28BYJ-48 @ half-step (ULN2003): 4096 half-steps = 360° (~0.088° each).
+STEPS_PER_REV = 4096
 STEPS_180_DEG = STEPS_PER_REV // 2
 
 # Slow step delay for max torque on 28BYJ-48 @ 5V (pan / tilt).
 DEFAULT_STEP_DELAY = 0.004
 
+# Alternating single-coil / dual-coil half-step drive (not true microstepping).
+HALF_STEP_SEQ = [
+    [1, 0, 0, 0],
+    [1, 1, 0, 0],
+    [0, 1, 0, 0],
+    [0, 1, 1, 0],
+    [0, 0, 1, 0],
+    [0, 0, 1, 1],
+    [0, 0, 0, 1],
+    [1, 0, 0, 1],
+]
+
 
 class MaxSpeed5VStepper:
-    """Single 28BYJ-48 on a ULN2003 driver."""
+    """Single 28BYJ-48 on a ULN2003 driver (half-step mode)."""
 
     def __init__(self, in1: int, in2: int, in3: int, in4: int):
         self.pins = [
@@ -38,12 +50,7 @@ class MaxSpeed5VStepper:
             OutputDevice(in3),
             OutputDevice(in4),
         ]
-        self.sequence = [
-            [1, 1, 0, 0],
-            [0, 1, 1, 0],
-            [0, 0, 1, 1],
-            [1, 0, 0, 1],
-        ]
+        self.sequence = [row[:] for row in HALF_STEP_SEQ]
         self._phase = 0
 
     def _apply(self, pattern: Sequence[int]) -> None:
@@ -54,7 +61,7 @@ class MaxSpeed5VStepper:
                 pin.off()
 
     def step(self, steps: int = 1, clockwise: bool = True, delay: float = DEFAULT_STEP_DELAY) -> None:
-        """Take ``steps`` full-steps (no accel curve — good for scan/track)."""
+        """Take ``steps`` half-steps (no accel curve — good for scan/track)."""
         if steps <= 0:
             return
         seq = self.sequence if clockwise else list(reversed(self.sequence))
@@ -183,10 +190,10 @@ class TurretMotors:
         )
         for i in range(max(pan_steps, tilt_steps)):
             if i < pan_steps:
-                self.motor1._phase = (self.motor1._phase + 1) % 4
+                self.motor1._phase = (self.motor1._phase + 1) % len(pan_seq)
                 self.motor1._apply(pan_seq[self.motor1._phase])
             if i < tilt_steps:
-                self.motor2._phase = (self.motor2._phase + 1) % 4
+                self.motor2._phase = (self.motor2._phase + 1) % len(tilt_seq)
                 self.motor2._apply(tilt_seq[self.motor2._phase])
             time.sleep(delay)
         if pan_steps:
@@ -224,8 +231,8 @@ class TurretMotors:
             else list(reversed(self.motor4.sequence))
         )
         for _ in range(steps):
-            self.motor3._phase = (self.motor3._phase + 1) % 4
-            self.motor4._phase = (self.motor4._phase + 1) % 4
+            self.motor3._phase = (self.motor3._phase + 1) % len(seq3)
+            self.motor4._phase = (self.motor4._phase + 1) % len(seq4)
             self.motor3._apply(seq3[self.motor3._phase])
             self.motor4._apply(seq4[self.motor4._phase])
             time.sleep(delay)
@@ -251,10 +258,11 @@ FourMotorTurret = TurretMotors
 
 def steps_per_pixel(frame_span: int, fov_deg: float = 69.0) -> float:
     """
-    Convert pixel error along one axis → motor steps (1:1 mount).
+    Convert pixel error along one axis → half-steps (1:1 mount).
 
     Use frame width + horizontal FOV for pan (X), frame height + vertical
-    FOV for tilt (Y).
+    FOV for tilt (Y). At 4096 half-steps/rev and ~55° FOV / 640 px, one
+    half-step is roughly one pixel.
     """
     if frame_span <= 0:
         raise ValueError("frame_span must be positive")

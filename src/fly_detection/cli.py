@@ -346,14 +346,14 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--scan-steps",
             type=int,
-            default=8,
-            help="Motor1 steps between frames while searching",
+            default=16,
+            help="Motor1 half-steps between frames while searching",
         )
         p.add_argument(
             "--max-track-steps",
             type=int,
-            default=64,
-            help="Max pan or tilt steps per frame while correcting aim",
+            default=128,
+            help="Max pan or tilt half-steps per frame while correcting aim",
         )
         p.add_argument(
             "--step-delay",

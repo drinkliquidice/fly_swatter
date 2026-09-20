@@ -2,6 +2,7 @@
 
 from .motor import (
     DEFAULT_MOTOR_PINS,
+    HALF_STEP_SEQ,
     MOTOR1_PINS,
     MOTOR2_PINS,
     MOTOR3_PINS,
@@ -17,6 +18,7 @@ from .motor import (
 
 __all__ = [
     "DEFAULT_MOTOR_PINS",
+    "HALF_STEP_SEQ",
     "MOTOR1_PINS",
     "MOTOR2_PINS",
     "MOTOR3_PINS",
