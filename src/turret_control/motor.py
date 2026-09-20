@@ -39,6 +39,18 @@ HALF_STEP_SEQ = [
     [1, 0, 0, 1],
 ]
 
+# 2-phase full-step for M3/M4 shoot/reload (matches tension calibration).
+FULL_STEP_SEQ = [
+    [1, 1, 0, 0],
+    [0, 1, 1, 0],
+    [0, 0, 1, 1],
+    [1, 0, 0, 1],
+]
+
+# Rubber-band cycle: position 0 = loaded, SHOOT_STEPS = fired.
+SHOOT_STEPS = 5086
+WIND_STEP_DELAY = 0.002  # wind delay for M3/M4 shoot/reload
+
 
 class MaxSpeed5VStepper:
     """Single 28BYJ-48 on a ULN2003 driver (half-step mode)."""
@@ -126,6 +138,8 @@ class TurretMotors:
         self.motor3 = MaxSpeed5VStepper(*pins[2])
         self.motor4 = MaxSpeed5VStepper(*pins[3])
         self.motors = [self.motor1, self.motor2, self.motor3, self.motor4]
+        # Wind position in full-steps: 0 = loaded, SHOOT_STEPS = shot.
+        self.wind_pos = 0
 
     # --- Motor 1: pan (X) ----------------------------------------------------
 
@@ -201,47 +215,90 @@ class TurretMotors:
         if tilt_steps:
             self.motor2.stop()
 
-    # --- Motors 3 + 4: opposing winders --------------------------------------
+    # --- Motors 3 + 4: opposing winders / shoot + reload --------------------
 
     def wind(
         self,
         steps: int,
         *,
         tighten: bool = True,
-        delay: float = DEFAULT_STEP_DELAY,
+        invert_m4: bool = True,
+        delay: float = WIND_STEP_DELAY,
+        full_step: bool = True,
     ) -> None:
         """
-        Wind the spring/rubber band.
+        Drive M3+M4 together for spring/rubber-band tension.
 
-        Motors face each other, so motor4 always runs opposite motor3.
-        ``tighten=True`` winds in; ``False`` releases.
+        Matches the calibration script: M4 is inverted by default so the
+        motors pull toward each other. Uses full-step by default so
+        ``SHOOT_STEPS`` (5086) matches the calibrated count.
         """
         if steps <= 0:
             return
-        m3_cw = tighten
-        m4_cw = not tighten
-        seq3 = (
-            self.motor3.sequence
-            if m3_cw
-            else list(reversed(self.motor3.sequence))
-        )
-        seq4 = (
-            self.motor4.sequence
-            if m4_cw
-            else list(reversed(self.motor4.sequence))
-        )
-        for _ in range(steps):
-            self.motor3._phase = (self.motor3._phase + 1) % len(seq3)
-            self.motor4._phase = (self.motor4._phase + 1) % len(seq4)
-            self.motor3._apply(seq3[self.motor3._phase])
-            self.motor4._apply(seq4[self.motor4._phase])
+        base = FULL_STEP_SEQ if full_step else HALF_STEP_SEQ
+        seq3 = base if tighten else list(reversed(base))
+        seq4 = list(reversed(seq3)) if invert_m4 else seq3
+        seq_len = len(base)
+
+        for i in range(steps):
+            pat3 = seq3[i % seq_len]
+            pat4 = seq4[i % seq_len]
+            self.motor3._apply(pat3)
+            self.motor4._apply(pat4)
             time.sleep(delay)
+
         self.motor3.stop()
         self.motor4.stop()
 
     def wind_degrees(self, degrees: float, *, tighten: bool = True) -> None:
+        # Half-step rev count for pan/tilt math; winders prefer full-step shoot API.
         steps = int(round(abs(degrees) / 360.0 * STEPS_PER_REV))
-        self.wind(steps, tighten=tighten)
+        self.wind(steps, tighten=tighten, full_step=False, delay=DEFAULT_STEP_DELAY)
+
+    def shoot(
+        self,
+        steps: int = SHOOT_STEPS,
+        *,
+        invert_m4: bool = True,
+        delay: float = WIND_STEP_DELAY,
+    ) -> None:
+        """
+        Fire the turret: advance from loaded (0) to shot (``steps``).
+
+        Release direction (tighten=False). Assumes ``wind_pos == 0``.
+        """
+        print(f"SHOOT: winding {steps} full-steps (0 → {steps})...")
+        self.wind(steps, tighten=False, invert_m4=invert_m4, delay=delay, full_step=True)
+        self.wind_pos = steps
+        print("SHOOT: fired.")
+
+    def reload(
+        self,
+        steps: int = SHOOT_STEPS,
+        *,
+        invert_m4: bool = True,
+        delay: float = WIND_STEP_DELAY,
+    ) -> None:
+        """
+        Reload the turret: return from shot (``steps``) to loaded (0).
+
+        Tighten direction (tighten=True).
+        """
+        print(f"RELOAD: winding {steps} full-steps ({steps} → 0)...")
+        self.wind(steps, tighten=True, invert_m4=invert_m4, delay=delay, full_step=True)
+        self.wind_pos = 0
+        print("RELOAD: loaded.")
+
+    def shoot_and_reload(
+        self,
+        steps: int = SHOOT_STEPS,
+        *,
+        invert_m4: bool = True,
+        delay: float = WIND_STEP_DELAY,
+    ) -> None:
+        """Shoot (0→steps) then immediately reload (steps→0)."""
+        self.shoot(steps, invert_m4=invert_m4, delay=delay)
+        self.reload(steps, invert_m4=invert_m4, delay=delay)
 
     def stop_all(self) -> None:
         for motor in self.motors:

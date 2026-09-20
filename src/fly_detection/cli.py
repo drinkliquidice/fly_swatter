@@ -70,11 +70,10 @@ def _run_target_loop(
     draw_fn: Callable,
 ) -> int:
     """
-    Motor1 pans back and forth across a scan arc while searching.
-
-    On target lock: keep the target centered in X (motor1 pan) and Y
-    (motor2 tilt) with proportional control. Camera sits above the turret
-    output, so both axes move the view.
+    Full target pipeline:
+      1. Motor1 sweeps while searching
+      2. On lock: proportional X (M1) + Y (M2) centering
+      3. When within ``target_radius`` px: M3/M4 shoot (0→5086) then reload
     """
     from .oak_camera import OakCamera, destroy_windows, show_frame
     from turret_control import STEPS_PER_REV, steps_per_pixel
@@ -85,15 +84,17 @@ def _run_target_loop(
     lost_frames = 0
     spp_x: Optional[float] = None
     spp_y: Optional[float] = None
+    last_shot = 0.0
+    # Require leaving tolerance (or cooldown) before the next shot.
+    shot_this_lock = False
 
     scan_range = max(1, int(round(args.scan_degrees / 360.0 * STEPS_PER_REV)))
-    scan_pos = 0  # steps from the CCW end of the sweep
-    scan_dir = 1  # +1 toward CW end, -1 toward CCW end
+    scan_pos = 0
+    scan_dir = 1
 
     print(
-        f"target-{mode_name}: motor1 sweeps {args.scan_degrees:.0f}° until a "
-        f"target is found (camera mount {args.mount_rotate_ccw}° CCW corrected), "
-        "then centers X+Y with motor1 pan + motor2 tilt. "
+        f"target-{mode_name}: scan → track X/Y → shoot+reload when within "
+        f"{args.target_radius}px (shoot={args.shoot_steps} full-steps). "
         "Press 'q' or Esc to quit."
     )
     try:
@@ -128,6 +129,7 @@ def _run_target_loop(
                         motors.pan_stop()
                         motors.tilt_stop()
                         state = TrackState.TRACKING
+                        shot_this_lock = False
                         print(
                             f"Target locked ({mode_name}) — "
                             "centering with motor1 (X) + motor2 (Y)."
@@ -139,8 +141,36 @@ def _run_target_loop(
                     if on_x and on_y:
                         motors.pan_stop()
                         motors.tilt_stop()
-                        _put_status(overlay, "TRACKING on-center")
+                        now = time.monotonic()
+                        can_shoot = (
+                            not shot_this_lock
+                            and (now - last_shot) >= args.shoot_cooldown
+                        )
+                        if can_shoot:
+                            _put_status(overlay, "SHOOTING + RELOAD")
+                            show_frame(window_title, overlay)
+                            print(
+                                f"On target (dx={dx}, dy={dy}) — "
+                                f"shoot {args.shoot_steps} then reload..."
+                            )
+                            motors.shoot_and_reload(
+                                steps=args.shoot_steps,
+                                invert_m4=not args.no_invert_m4,
+                                delay=args.wind_delay,
+                            )
+                            last_shot = time.monotonic()
+                            shot_this_lock = True
+                            print("Ready (loaded at 0). Resuming track.")
+                        else:
+                            _put_status(overlay, "ON TARGET (armed/cooldown)")
                     else:
+                        # Left the deadzone — allow another shot on re-center.
+                        if shot_this_lock and (
+                            abs(dx) > args.target_radius * 2
+                            or abs(dy) > args.target_radius * 2
+                        ):
+                            shot_this_lock = False
+
                         gain = args.track_gain
                         pan_steps = 0
                         tilt_steps = 0
@@ -150,14 +180,14 @@ def _run_target_loop(
                         if not on_x:
                             raw = int(round(abs(dx) * spp_x * gain))
                             pan_steps = max(1, min(raw, args.max_track_steps))
-                            # Geared axes: motor direction is opposite visual error.
                             pan_cw = (dx < 0) ^ args.invert_pan
                             scan_pos = int(
                                 max(
                                     0,
                                     min(
                                         scan_range,
-                                        scan_pos + (pan_steps if dx > 0 else -pan_steps),
+                                        scan_pos
+                                        + (pan_steps if dx > 0 else -pan_steps),
                                     ),
                                 )
                             )
@@ -186,6 +216,7 @@ def _run_target_loop(
                         and lost_frames >= args.lost_frames
                     ):
                         state = TrackState.SEARCHING
+                        shot_this_lock = False
                         motors.tilt_stop()
                         print("Target lost — resuming pan sweep.")
 
@@ -265,8 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fly_swatter",
         description=(
-            "Scan with motor1 until a face or fly is found, then center it "
-            "in X (pan) and Y (tilt) with proportional control"
+            "Scan, center on a face/fly in X+Y, then shoot+reload when "
+            "within tolerance"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -303,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--target-radius",
             type=int,
             default=20,
-            help="Deadzone pixels counted as centered",
+            help="Deadzone pixels counted as centered / allowed to shoot (default: 20)",
         )
         p.add_argument(
             "--mount-rotate-ccw",
@@ -375,6 +406,29 @@ def build_parser() -> argparse.ArgumentParser:
             type=int,
             default=15,
             help="Frames without a target before resuming search",
+        )
+        p.add_argument(
+            "--shoot-steps",
+            type=int,
+            default=5086,
+            help="Full-steps from loaded (0) to shot (default: 5086)",
+        )
+        p.add_argument(
+            "--wind-delay",
+            type=float,
+            default=0.002,
+            help="M3/M4 step delay while shooting/reloading (default: 0.002s)",
+        )
+        p.add_argument(
+            "--shoot-cooldown",
+            type=float,
+            default=2.0,
+            help="Minimum seconds between shots",
+        )
+        p.add_argument(
+            "--no-invert-m4",
+            action="store_true",
+            help="Do not invert motor4 relative to motor3 while winding",
         )
         p.add_argument(
             "--motor-pins",
