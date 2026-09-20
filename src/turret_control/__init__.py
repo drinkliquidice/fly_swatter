@@ -2,18 +2,30 @@
 
 from .motor import (
     DEFAULT_MOTOR_PINS,
+    MOTOR1_PINS,
+    MOTOR2_PINS,
+    MOTOR3_PINS,
+    MOTOR4_PINS,
     STEPS_180_DEG,
     STEPS_PER_REV,
     FourMotorTurret,
     MaxSpeed5VStepper,
+    TurretMotors,
     parse_motor_pins,
+    steps_per_pixel,
 )
 
 __all__ = [
     "DEFAULT_MOTOR_PINS",
+    "MOTOR1_PINS",
+    "MOTOR2_PINS",
+    "MOTOR3_PINS",
+    "MOTOR4_PINS",
     "STEPS_180_DEG",
     "STEPS_PER_REV",
     "FourMotorTurret",
     "MaxSpeed5VStepper",
+    "TurretMotors",
     "parse_motor_pins",
+    "steps_per_pixel",
 ]

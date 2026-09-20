@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
+fly_swatter = "fly_detection.cli:main"
 fly-detect = "fly_detection.cli:main"
 
 [tool.setuptools.packages.find]

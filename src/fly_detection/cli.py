@@ -1,14 +1,20 @@
-"""Aim CLI: track faces or flies, show aim crosshair, drive four motors 180°."""
+"""CLI: scan + center-track faces or flies with motor1 pan."""
 
 from __future__ import annotations
 
 import argparse
 import time
+from enum import Enum, auto
 from typing import Callable, List, Optional, Tuple
 
 from .face_pipeline import FaceDetector, draw_faces
 from .fly_pipeline import StaticFlyDetector, draw_flies
 from .target import AimTarget, aim_target_from_args, draw_target
+
+
+class TrackState(Enum):
+    SEARCHING = auto()
+    TRACKING = auto()
 
 
 def _aim_from_namespace(args: argparse.Namespace) -> AimTarget:
@@ -48,18 +54,14 @@ def _put_status(frame, text: str) -> None:
     )
 
 
-def _build_turret(args: argparse.Namespace):
-    from turret_control import (
-        DEFAULT_MOTOR_PINS,
-        FourMotorTurret,
-        parse_motor_pins,
-    )
+def _build_motors(args: argparse.Namespace):
+    from turret_control import DEFAULT_MOTOR_PINS, TurretMotors, parse_motor_pins
 
     pins = parse_motor_pins(args.motor_pins) if args.motor_pins else DEFAULT_MOTOR_PINS
-    return FourMotorTurret(motor_pins=pins)
+    return TurretMotors(motor_pins=pins)
 
 
-def _run_aim_loop(
+def _run_target_loop(
     args: argparse.Namespace,
     *,
     mode_name: str,
@@ -68,28 +70,35 @@ def _run_aim_loop(
     draw_fn: Callable,
 ) -> int:
     """
-    Shared aim loop: detect → crosshair on nearest target → move all motors 180°.
+    Motor1 continuously pans while searching.
+
+    On target lock: stop the scan and keep the target centered in the frame
+    (1:1 camera↔motor yaw). Motor2 is unused. Motors 3/4 are available via
+    TurretMotors.wind() but are not driven in this loop yet.
     """
     from .oak_camera import OakCamera, destroy_windows, show_frame
-    from turret_control import STEPS_180_DEG
+    from turret_control import steps_per_pixel
 
     aim = _aim_from_namespace(args)
-    turret = _build_turret(args)
-    cooldown_s = args.cooldown
-    last_fire = 0.0
-    was_present = False
+    motors = _build_motors(args)
+    state = TrackState.SEARCHING
+    lost_frames = 0
+    spp: Optional[float] = None  # steps per pixel, set once we know width
 
     print(
-        f"Aim ({mode_name}): crosshair + 180° on all 4 motors when detected. "
-        "Press 'q' or Esc to quit."
+        f"target-{mode_name}: motor1 scans until a target is found, "
+        "then holds it centered. Press 'q' or Esc to quit."
     )
     try:
         with OakCamera(width=args.width, height=args.height, fps=args.fps) as cam:
             while True:
                 ok, frame = cam.read()
                 if not ok or frame is None:
-                    time.sleep(0.005)
+                    time.sleep(0.002)
                     continue
+
+                if spp is None:
+                    spp = steps_per_pixel(frame.shape[1], fov_deg=args.fov)
 
                 detections = detect_fn(frame)
                 centers = [d.center for d in detections]
@@ -97,64 +106,86 @@ def _run_aim_loop(
                 overlay = draw_fn(frame, detections, selected_index=sel_i)
                 overlay = draw_target(overlay, aim, selected_xy=sel_xy)
 
-                now = time.monotonic()
-                present = len(detections) > 0
+                if sel_xy is not None:
+                    lost_frames = 0
+                    dx, _dy, _dist = aim.error_to(sel_xy, frame.shape)
 
-                if present and not was_present and (now - last_fire) >= cooldown_s:
-                    _put_status(overlay, "MOVING 180 deg (4 motors)")
-                    if not show_frame(window_title, overlay):
-                        break
-                    print(
-                        f"{mode_name.capitalize()} detected ({len(detections)}) "
-                        "— moving all 4 motors 180°..."
-                    )
-                    turret.move_max_5v(steps=STEPS_180_DEG, clockwise=args.clockwise)
-                    last_fire = time.monotonic()
-                    print("Motor move complete.")
-                else:
-                    if present and sel_xy is not None:
-                        status = (
-                            "on target"
-                            if aim.is_on_target(sel_xy, frame.shape)
-                            else "tracking"
-                        )
+                    if state is TrackState.SEARCHING:
+                        motors.pan_stop()
+                        state = TrackState.TRACKING
+                        print(f"Target locked ({mode_name}) — centering with motor1.")
+
+                    if abs(dx) <= args.target_radius:
+                        motors.pan_stop()
+                        _put_status(overlay, "TRACKING on-center")
                     else:
-                        status = "searching"
-                    _put_status(overlay, status)
-                    if not show_frame(window_title, overlay):
-                        break
+                        # 1:1 pan: pixel error → motor steps.
+                        raw_steps = int(round(abs(dx) * spp))
+                        steps = max(1, min(raw_steps, args.max_track_steps))
+                        # Positive dx => target is right of aim. Default: CW pans right.
+                        move_cw = (dx > 0) ^ args.invert_pan
+                        motors.pan_step(
+                            steps,
+                            clockwise=move_cw,
+                            delay=args.step_delay,
+                        )
+                        _put_status(
+                            overlay,
+                            f"TRACKING dx={dx} steps={steps}",
+                        )
+                else:
+                    lost_frames += 1
+                    if (
+                        state is TrackState.TRACKING
+                        and lost_frames >= args.lost_frames
+                    ):
+                        state = TrackState.SEARCHING
+                        print("Target lost — resuming motor1 scan.")
 
-                was_present = present
+                    if state is TrackState.SEARCHING:
+                        motors.pan_step(
+                            args.scan_steps,
+                            clockwise=not args.scan_ccw,
+                            delay=args.step_delay,
+                        )
+                        _put_status(overlay, "SEARCHING (motor1 spinning)")
+                    else:
+                        motors.pan_stop()
+                        _put_status(overlay, "TRACKING (target briefly lost)")
+
+                if not show_frame(window_title, overlay):
+                    break
     except KeyboardInterrupt:
         print("\nInterrupted.")
     finally:
-        turret.close()
+        motors.stop_all()
+        motors.close()
         destroy_windows()
     return 0
 
 
-def cmd_aim_faces(args: argparse.Namespace) -> int:
+def cmd_target_face(args: argparse.Namespace) -> int:
     detector = FaceDetector()
-    return _run_aim_loop(
+    return _run_target_loop(
         args,
-        mode_name="faces",
-        window_title="Aim faces",
+        mode_name="face",
+        window_title="target-face",
         detect_fn=detector.detect,
         draw_fn=draw_faces,
     )
 
 
-def cmd_aim_flies(args: argparse.Namespace) -> int:
+def cmd_target_flies(args: argparse.Namespace) -> int:
     detector = StaticFlyDetector(
         min_area=args.min_area,
         max_area=args.max_area,
         dark_threshold=args.dark_threshold,
         confirm_frames=args.confirm_frames,
     )
-    return _run_aim_loop(
+    return _run_target_loop(
         args,
         mode_name="flies",
-        window_title="Aim flies",
+        window_title="target-flies",
         detect_fn=detector.detect,
         draw_fn=draw_flies,
     )
@@ -162,20 +193,18 @@ def cmd_aim_flies(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="fly-detect",
+        prog="fly_swatter",
         description=(
-            "Fly swatter aim modes: track faces or flies, show aim crosshair, "
-            "and rotate all four steppers 180° on detection"
+            "Scan with motor1 until a face or fly is found, then keep it "
+            "centered in the camera frame"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def add_camera_args(p: argparse.ArgumentParser) -> None:
+    def add_shared(p: argparse.ArgumentParser) -> None:
         p.add_argument("--width", type=int, default=640, help="Preview width")
         p.add_argument("--height", type=int, default=480, help="Preview height")
         p.add_argument("--fps", type=int, default=30, help="Camera FPS")
-
-    def add_target_args(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--target-x",
             type=float,
@@ -192,67 +221,89 @@ def build_parser() -> argparse.ArgumentParser:
             "--target-norm-x",
             type=float,
             default=0.5,
-            help="Aim point X as fraction of frame width (default: 0.5)",
+            help="Aim X as fraction of width (default: center)",
         )
         p.add_argument(
             "--target-norm-y",
             type=float,
             default=0.5,
-            help="Aim point Y as fraction of frame height (default: 0.5)",
+            help="Aim Y as fraction of height (default: center)",
         )
         p.add_argument(
             "--target-radius",
             type=int,
-            default=16,
-            help="Pixel radius counted as lined up with the barrel",
+            default=20,
+            help="Deadzone pixels counted as centered",
         )
-
-    def add_motor_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--fov",
+            type=float,
+            default=69.0,
+            help="Camera horizontal FOV in degrees (for 1:1 pan steps)",
+        )
+        p.add_argument(
+            "--scan-steps",
+            type=int,
+            default=8,
+            help="Motor1 steps between frames while searching",
+        )
+        p.add_argument(
+            "--scan-ccw",
+            action="store_true",
+            help="Search by spinning motor1 counter-clockwise",
+        )
+        p.add_argument(
+            "--max-track-steps",
+            type=int,
+            default=64,
+            help="Max motor1 steps per frame while correcting aim",
+        )
+        p.add_argument(
+            "--step-delay",
+            type=float,
+            default=0.0012,
+            help="Delay between stepper phases (seconds)",
+        )
+        p.add_argument(
+            "--invert-pan",
+            action="store_true",
+            help="Invert motor1 direction relative to pixel error",
+        )
+        p.add_argument(
+            "--lost-frames",
+            type=int,
+            default=15,
+            help="Frames without a target before resuming search",
+        )
         p.add_argument(
             "--motor-pins",
             type=str,
             default=None,
             help=(
-                "Four motors as IN1,IN2,IN3,IN4 groups separated by ';'. "
-                "Default: 17,27,22,23;5,6,13,19;12,16,20,21;18,24,25,8"
+                "Override pins as m1;m2;m3;m4 each IN1,IN2,IN3,IN4. "
+                "Default: 17,27,22,23;10,9,11,25;5,6,13,12;19,16,26,20"
             ),
         )
-        p.add_argument(
-            "--cooldown",
-            type=float,
-            default=3.0,
-            help="Seconds to wait before another motor move after a trigger",
-        )
-        p.add_argument(
-            "--clockwise",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help="Motor direction for the 180° move (default: clockwise)",
-        )
 
-    p_faces = sub.add_parser(
-        "aim-faces",
-        help="Aim at faces: crosshair + move all 4 motors 180° on detection",
+    p_face = sub.add_parser(
+        "target-face",
+        help="Motor1 scan/track human faces",
     )
-    add_camera_args(p_faces)
-    add_target_args(p_faces)
-    add_motor_args(p_faces)
-    p_faces.set_defaults(func=cmd_aim_faces)
+    add_shared(p_face)
+    p_face.set_defaults(func=cmd_target_face)
 
     p_flies = sub.add_parser(
-        "aim-flies",
-        help="Aim at static flies: crosshair + move all 4 motors 180° on detection",
+        "target-flies",
+        help="Motor1 scan/track static flies",
     )
-    add_camera_args(p_flies)
-    add_target_args(p_flies)
-    add_motor_args(p_flies)
+    add_shared(p_flies)
     p_flies.add_argument("--min-area", type=int, default=15, help="Min blob area")
     p_flies.add_argument("--max-area", type=int, default=900, help="Max blob area")
     p_flies.add_argument(
         "--dark-threshold",
         type=int,
         default=70,
-        help="Grayscale cutoff: pixels darker than this are candidate flies",
+        help="Grayscale cutoff for fly blobs",
     )
     p_flies.add_argument(
         "--confirm-frames",
@@ -260,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="Frames a blob must persist to count as static",
     )
-    p_flies.set_defaults(func=cmd_aim_flies)
+    p_flies.set_defaults(func=cmd_target_flies)
 
     return parser
 
