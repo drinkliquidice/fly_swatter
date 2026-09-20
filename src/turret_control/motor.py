@@ -24,8 +24,8 @@ DEFAULT_MOTOR_PINS: Tuple[Tuple[int, int, int, int], ...] = (
 STEPS_PER_REV = 2048
 STEPS_180_DEG = STEPS_PER_REV // 2
 
-# Comfortable continuous-scan / tracking step delay (seconds).
-DEFAULT_STEP_DELAY = 0.0012
+# Slow step delay for max torque on 28BYJ-48 @ 5V (pan / tilt).
+DEFAULT_STEP_DELAY = 0.004
 
 
 class MaxSpeed5VStepper:
@@ -66,9 +66,10 @@ class MaxSpeed5VStepper:
 
     def move_max_5v(self, steps: int = STEPS_PER_REV, clockwise: bool = True) -> None:
         """Blocking move with acceleration (large wind / homing moves)."""
-        start_delay = 0.0025
-        min_delay = 0.00085
-        accel_steps = min(300, max(1, steps // 3))
+        # Torque-first accel profile (slower than peak 5V speed).
+        start_delay = 0.005
+        min_delay = 0.003
+        accel_steps = min(200, max(1, steps // 4))
 
         seq = self.sequence if clockwise else list(reversed(self.sequence))
         seq_len = len(seq)

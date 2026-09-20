@@ -165,9 +165,8 @@ def _run_target_loop(
                         if not on_y:
                             raw = int(round(abs(dy) * spp_y * gain))
                             tilt_steps = max(1, min(raw, args.max_track_steps))
-                            # Motor2 is geared opposite the turret output, so the
-                            # motor must run the opposite way of the desired tilt.
-                            tilt_cw = (dy < 0) ^ args.invert_tilt
+                            # Positive dy => target below aim.
+                            tilt_cw = (dy > 0) ^ args.invert_tilt
 
                         motors.correct_aim(
                             pan_steps=pan_steps,
@@ -360,8 +359,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--step-delay",
             type=float,
-            default=0.0012,
-            help="Delay between stepper phases (seconds)",
+            default=0.004,
+            help="Delay between stepper phases in seconds (higher = more torque; default: 0.004)",
         )
         p.add_argument(
             "--invert-pan",
@@ -374,10 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--invert-tilt",
             action="store_true",
-            help=(
-                "Invert motor2 (tilt/Y) direction "
-                "(already accounts for opposite gearing by default)"
-            ),
+            help="Invert motor2 (tilt/Y) direction",
         )
         p.add_argument(
             "--lost-frames",
