@@ -306,7 +306,7 @@ def _run_target_loop(
                         motors.pan_step(
                             steps,
                             clockwise=move_cw,
-                            delay=args.step_delay,
+                            delay=args.scan_step_delay,
                         )
                         scan_pos = int(
                             max(0, min(scan_range, scan_pos + scan_dir * steps))
@@ -468,8 +468,14 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--scan-steps",
             type=int,
-            default=16,
-            help="Motor1 half-steps between frames while searching",
+            default=5,
+            help="Motor1 half-steps between frames while searching (lower = slower)",
+        )
+        p.add_argument(
+            "--scan-step-delay",
+            type=float,
+            default=0.007,
+            help="Delay between search pan steps in seconds (higher = slower; default: 0.007)",
         )
         p.add_argument(
             "--max-track-steps",
@@ -481,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--step-delay",
             type=float,
             default=0.004,
-            help="Delay between stepper phases in seconds (higher = more torque; default: 0.004)",
+            help="Delay between track stepper phases in seconds (higher = more torque; default: 0.004)",
         )
         p.add_argument(
             "--invert-pan",
