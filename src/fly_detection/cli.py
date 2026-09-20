@@ -155,7 +155,7 @@ def _run_target_loop(
                             )
                             motors.shoot_and_reload(
                                 steps=args.shoot_steps,
-                                invert_m4=not args.no_invert_m4,
+                                invert_m4=args.invert_m4,
                                 delay=args.wind_delay,
                             )
                             last_shot = time.monotonic()
@@ -426,9 +426,9 @@ def build_parser() -> argparse.ArgumentParser:
             help="Minimum seconds between shots",
         )
         p.add_argument(
-            "--no-invert-m4",
+            "--invert-m4",
             action="store_true",
-            help="Do not invert motor4 relative to motor3 while winding",
+            help="Invert motor4 relative to motor3 while winding (default: not inverted)",
         )
         p.add_argument(
             "--motor-pins",

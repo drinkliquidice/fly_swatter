@@ -222,16 +222,16 @@ class TurretMotors:
         steps: int,
         *,
         tighten: bool = True,
-        invert_m4: bool = True,
+        invert_m4: bool = False,
         delay: float = WIND_STEP_DELAY,
         full_step: bool = True,
     ) -> None:
         """
         Drive M3+M4 together for spring/rubber-band tension.
 
-        Matches the calibration script: M4 is inverted by default so the
-        motors pull toward each other. Uses full-step by default so
-        ``SHOOT_STEPS`` (5086) matches the calibrated count.
+        By default both motors use the same phase direction. Pass
+        ``invert_m4=True`` if the motors face each other and must pull opposite.
+        Uses full-step by default so ``SHOOT_STEPS`` (5086) matches calibration.
         """
         if steps <= 0:
             return
@@ -259,7 +259,7 @@ class TurretMotors:
         self,
         steps: int = SHOOT_STEPS,
         *,
-        invert_m4: bool = True,
+        invert_m4: bool = False,
         delay: float = WIND_STEP_DELAY,
     ) -> None:
         """
@@ -276,7 +276,7 @@ class TurretMotors:
         self,
         steps: int = SHOOT_STEPS,
         *,
-        invert_m4: bool = True,
+        invert_m4: bool = False,
         delay: float = WIND_STEP_DELAY,
     ) -> None:
         """
@@ -293,7 +293,7 @@ class TurretMotors:
         self,
         steps: int = SHOOT_STEPS,
         *,
-        invert_m4: bool = True,
+        invert_m4: bool = False,
         delay: float = WIND_STEP_DELAY,
     ) -> None:
         """Shoot (0→steps) then immediately reload (steps→0)."""
