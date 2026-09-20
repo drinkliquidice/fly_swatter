@@ -1,7 +1,7 @@
 """Vision pipeline: OAK-1 camera, moving faces, static flies, and aim target."""
 
 from .face_pipeline import FaceBox, FaceDetector, draw_faces
-from .fly_pipeline import FlyBox, StaticFlyDetector, draw_flies
+from .fly_pipeline import FlyBox, PaperBox, StaticFlyDetector, draw_flies
 from .target import AimTarget, draw_target
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "FaceDetector",
     "draw_faces",
     "FlyBox",
+    "PaperBox",
     "StaticFlyDetector",
     "draw_flies",
 ]

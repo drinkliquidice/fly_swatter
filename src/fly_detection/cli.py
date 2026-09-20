@@ -278,17 +278,31 @@ def cmd_target_face(args: argparse.Namespace) -> int:
 
 def cmd_target_flies(args: argparse.Namespace) -> int:
     detector = StaticFlyDetector(
-        min_area=args.min_area,
-        max_area=args.max_area,
+        min_fly_w=args.min_fly_w,
+        min_fly_h=args.min_fly_h,
+        max_fly_w=args.max_fly_w,
+        max_fly_h=args.max_fly_h,
+        min_paper_w=args.min_paper_w,
+        min_paper_h=args.min_paper_h,
+        white_threshold=args.white_threshold,
         dark_threshold=args.dark_threshold,
         confirm_frames=args.confirm_frames,
     )
+
+    def _draw(frame, flies, selected_index=None):
+        return draw_flies(
+            frame,
+            flies,
+            selected_index=selected_index,
+            papers=detector.last_papers,
+        )
+
     return _run_target_loop(
         args,
         mode_name="flies",
         window_title="target-flies",
         detect_fn=detector.detect,
-        draw_fn=draw_flies,
+        draw_fn=_draw,
     )
 
 
@@ -449,22 +463,50 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_flies = sub.add_parser(
         "target-flies",
-        help="Motor1 scan/track static flies",
+        help="Scan/track printed flies on white paper (≥20x20 on ≥300x300)",
     )
     add_shared(p_flies)
-    p_flies.add_argument("--min-area", type=int, default=15, help="Min blob area")
-    p_flies.add_argument("--max-area", type=int, default=900, help="Max blob area")
+    p_flies.add_argument(
+        "--min-fly-w", type=int, default=20, help="Min fly width in pixels"
+    )
+    p_flies.add_argument(
+        "--min-fly-h", type=int, default=20, help="Min fly height in pixels"
+    )
+    p_flies.add_argument(
+        "--max-fly-w", type=int, default=120, help="Max fly width in pixels"
+    )
+    p_flies.add_argument(
+        "--max-fly-h", type=int, default=120, help="Max fly height in pixels"
+    )
+    p_flies.add_argument(
+        "--min-paper-w",
+        type=int,
+        default=300,
+        help="Min white paper width in pixels",
+    )
+    p_flies.add_argument(
+        "--min-paper-h",
+        type=int,
+        default=300,
+        help="Min white paper height in pixels",
+    )
+    p_flies.add_argument(
+        "--white-threshold",
+        type=int,
+        default=200,
+        help="Grayscale cutoff for paper (brighter = paper)",
+    )
     p_flies.add_argument(
         "--dark-threshold",
         type=int,
-        default=70,
-        help="Grayscale cutoff for fly blobs",
+        default=110,
+        help="Grayscale cutoff for printed fly on the paper",
     )
     p_flies.add_argument(
         "--confirm-frames",
         type=int,
         default=3,
-        help="Frames a blob must persist to count as static",
+        help="Frames a fly must persist to count as static",
     )
     p_flies.set_defaults(func=cmd_target_flies)
 
