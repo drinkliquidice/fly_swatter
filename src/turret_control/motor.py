@@ -140,6 +140,7 @@ class TurretMotors:
         self.motors = [self.motor1, self.motor2, self.motor3, self.motor4]
         # Wind position in full-steps: 0 = loaded, SHOOT_STEPS = shot.
         self.wind_pos = 0
+        self._wind_cancel = False
 
     # --- Motor 1: pan (X) ----------------------------------------------------
 
@@ -235,12 +236,15 @@ class TurretMotors:
         """
         if steps <= 0:
             return
+        self._wind_cancel = False
         base = FULL_STEP_SEQ if full_step else HALF_STEP_SEQ
         seq3 = base if tighten else list(reversed(base))
         seq4 = list(reversed(seq3)) if invert_m4 else seq3
         seq_len = len(base)
 
         for i in range(steps):
+            if self._wind_cancel:
+                break
             pat3 = seq3[i % seq_len]
             pat4 = seq4[i % seq_len]
             self.motor3._apply(pat3)
@@ -298,7 +302,12 @@ class TurretMotors:
         self.shoot(steps, invert_m4=invert_m4, delay=delay)
         self.reload(steps, invert_m4=invert_m4, delay=delay)
 
+    def cancel_wind(self) -> None:
+        """Request the active wind/shoot/reload loop to stop."""
+        self._wind_cancel = True
+
     def stop_all(self) -> None:
+        self.cancel_wind()
         for motor in self.motors:
             motor.stop()
 

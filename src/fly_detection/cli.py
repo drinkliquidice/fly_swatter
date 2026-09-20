@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 from enum import Enum, auto
 from typing import Callable, List, Optional, Tuple
@@ -15,6 +16,12 @@ from .target import AimTarget, aim_target_from_args, draw_target
 class TrackState(Enum):
     SEARCHING = auto()
     TRACKING = auto()
+
+
+class FirePhase(Enum):
+    IDLE = auto()
+    SHOOTING = auto()
+    RELOADING = auto()
 
 
 def _aim_from_namespace(args: argparse.Namespace) -> AimTarget:
@@ -81,16 +88,68 @@ def _run_target_loop(
     aim = _aim_from_namespace(args)
     motors = _build_motors(args)
     state = TrackState.SEARCHING
+    fire_phase = FirePhase.IDLE
     lost_frames = 0
     spp_x: Optional[float] = None
     spp_y: Optional[float] = None
     last_shot = 0.0
     # Require leaving tolerance (or cooldown) before the next shot.
     shot_this_lock = False
+    shoot_thread: Optional[threading.Thread] = None
+    shoot_error: list[BaseException] = []
 
     scan_range = max(1, int(round(args.scan_degrees / 360.0 * STEPS_PER_REV)))
     scan_pos = 0
     scan_dir = 1
+
+    def _start_shoot(dx: int, dy: int) -> None:
+        nonlocal shoot_thread, fire_phase, shot_this_lock
+
+        def _worker() -> None:
+            nonlocal fire_phase
+            try:
+                fire_phase = FirePhase.SHOOTING
+                motors.shoot(
+                    steps=args.shoot_steps,
+                    invert_m4=args.invert_m4,
+                    delay=args.wind_delay,
+                )
+                fire_phase = FirePhase.RELOADING
+                motors.reload(
+                    steps=args.shoot_steps,
+                    invert_m4=args.invert_m4,
+                    delay=args.wind_delay,
+                )
+            except BaseException as exc:  # noqa: BLE001 — report back to loop
+                shoot_error.append(exc)
+            finally:
+                fire_phase = FirePhase.IDLE
+
+        print(
+            f"On target (dx={dx}, dy={dy}) — "
+            f"shoot while aiming, then reload while still..."
+        )
+        shot_this_lock = True
+        shoot_error.clear()
+        fire_phase = FirePhase.SHOOTING
+        shoot_thread = threading.Thread(target=_worker, daemon=True)
+        shoot_thread.start()
+
+    def _finish_shoot_if_done() -> None:
+        nonlocal shoot_thread, fire_phase, last_shot
+        if shoot_thread is None:
+            return
+        if shoot_thread.is_alive():
+            return
+        shoot_thread.join(timeout=0.0)
+        shoot_thread = None
+        if shoot_error:
+            print(f"Shoot/reload failed: {shoot_error[0]}")
+            shoot_error.clear()
+        else:
+            print("Ready (loaded at 0). Resuming full track.")
+        last_shot = time.monotonic()
+        fire_phase = FirePhase.IDLE
 
     print(
         f"target-{mode_name}: scan → track X/Y → shoot+reload when within "
@@ -115,11 +174,24 @@ def _run_target_loop(
                     spp_x = steps_per_pixel(w, fov_deg=args.fov)
                     spp_y = steps_per_pixel(h, fov_deg=args.fov_v)
 
+                _finish_shoot_if_done()
+                reloading = fire_phase is FirePhase.RELOADING
+                shooting = fire_phase is FirePhase.SHOOTING
+
                 detections = detect_fn(frame)
                 centers = [d.center for d in detections]
                 sel_i, sel_xy = _selected_center(aim, centers, frame.shape)
                 overlay = draw_fn(frame, detections, selected_index=sel_i)
                 overlay = draw_target(overlay, aim, selected_xy=sel_xy)
+
+                # While reloading: keep the feed live, but hold pan/tilt still.
+                if reloading:
+                    motors.pan_stop()
+                    motors.tilt_stop()
+                    _put_status(overlay, "RELOADING (aim frozen)")
+                    if not show_frame(window_title, overlay):
+                        break
+                    continue
 
                 if sel_xy is not None:
                     lost_frames = 0
@@ -144,28 +216,20 @@ def _run_target_loop(
                         now = time.monotonic()
                         can_shoot = (
                             not shot_this_lock
+                            and not shooting
                             and (now - last_shot) >= args.shoot_cooldown
+                            and (shoot_thread is None)
                         )
                         if can_shoot:
-                            _put_status(overlay, "SHOOTING + RELOAD")
-                            show_frame(window_title, overlay)
-                            print(
-                                f"On target (dx={dx}, dy={dy}) — "
-                                f"shoot {args.shoot_steps} then reload..."
-                            )
-                            motors.shoot_and_reload(
-                                steps=args.shoot_steps,
-                                invert_m4=args.invert_m4,
-                                delay=args.wind_delay,
-                            )
-                            last_shot = time.monotonic()
-                            shot_this_lock = True
-                            print("Ready (loaded at 0). Resuming track.")
+                            _put_status(overlay, "SHOOTING (still aiming)")
+                            _start_shoot(dx, dy)
+                        elif shooting:
+                            _put_status(overlay, "SHOOTING + ON TARGET")
                         else:
                             _put_status(overlay, "ON TARGET (armed/cooldown)")
                     else:
                         # Left the deadzone — allow another shot on re-center.
-                        if shot_this_lock and (
+                        if shot_this_lock and not shooting and (
                             abs(dx) > args.target_radius * 2
                             or abs(dy) > args.target_radius * 2
                         ):
@@ -204,23 +268,26 @@ def _run_target_loop(
                             tilt_cw=tilt_cw,
                             delay=args.step_delay,
                         )
-                        _put_status(
-                            overlay,
-                            f"TRACKING dx={dx} dy={dy} "
-                            f"pan={pan_steps} tilt={tilt_steps}",
+                        status = (
+                            f"SHOOTING + TRACKING dx={dx} dy={dy}"
+                            if shooting
+                            else f"TRACKING dx={dx} dy={dy} "
+                            f"pan={pan_steps} tilt={tilt_steps}"
                         )
+                        _put_status(overlay, status)
                 else:
                     lost_frames += 1
                     if (
                         state is TrackState.TRACKING
                         and lost_frames >= args.lost_frames
+                        and not shooting
                     ):
                         state = TrackState.SEARCHING
                         shot_this_lock = False
                         motors.tilt_stop()
                         print("Target lost — resuming pan sweep.")
 
-                    if state is TrackState.SEARCHING:
+                    if state is TrackState.SEARCHING and not shooting:
                         if scan_dir > 0 and scan_pos >= scan_range:
                             scan_dir = -1
                         elif scan_dir < 0 and scan_pos <= 0:
@@ -252,13 +319,21 @@ def _run_target_loop(
                     else:
                         motors.pan_stop()
                         motors.tilt_stop()
-                        _put_status(overlay, "TRACKING (target briefly lost)")
+                        label = (
+                            "SHOOTING (no target)"
+                            if shooting
+                            else "TRACKING (target briefly lost)"
+                        )
+                        _put_status(overlay, label)
 
                 if not show_frame(window_title, overlay):
                     break
     except KeyboardInterrupt:
         print("\nInterrupted.")
     finally:
+        motors.cancel_wind()
+        if shoot_thread is not None and shoot_thread.is_alive():
+            shoot_thread.join(timeout=2.0)
         motors.stop_all()
         motors.close()
         destroy_windows()
